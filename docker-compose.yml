@@ -5,4 +5,12 @@ services:
     build: .
     ports:
       - "8000:8000"
+    environment:
+      - MAX_BOT_TOKEN=f9LHodD0cOKodBBeMSpvBhU4YbIM22gBT45WK0-OFpQJsaoi1r5RrTT_rTUgbuLGxvvgpf9vse_QhwQoiRwh
+      - ADMIN_CHAT_ID=12018296
+      - DEEPSEEK_API_KEY=sk-dd8b8fec6a52478ebcb2c22d38d93af3
+      - YKASSA_SHOP_ID=1310983
+      - YKASSA_SECRET_KEY=live_BGIxIldEUUl4TvwqqzZ9Yg_Vmi09FeJ56u6DtR-7mJE
+      - YKASSA_TEST_MODE=false
+      - PORT=8000
     restart: always
