@@ -29,6 +29,7 @@ YKASSA_TEST_MODE = os.getenv("YKASSA_TEST_MODE", "true").lower() == "true"
 
 MAX_API_URL = "https://platform-api.max.ru"
 YKASSA_API_URL = "https://api.yookassa.ru/v3"
+PAYMENT_URL = "https://yookassa.ru/my/i/adO_-KVsYKuY/l"
 
 if not MAX_BOT_TOKEN:
     raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in .env")
@@ -311,6 +312,7 @@ def log_event(user_id: str, event_type: str, event_data: str = None):
     logger.info(f"Event: {event_type} | User: {user_id} | Data: {event_data}")
 
 async def send_message(chat_id: str, text: str, keyboard: list = None):
+    logger.info(f"MAX_BOT_TOKEN first 10 chars: {MAX_BOT_TOKEN[:10] if MAX_BOT_TOKEN else 'NOT SET'}")
     url = f"{MAX_API_URL}/messages"
     payload = {"chat_id": chat_id, "text": text}
     if keyboard:
@@ -865,7 +867,6 @@ async def process_message(chat_id: str, text: str):
     if state == STATE_SURVEY:
         step = data.get("survey_step", 0)
         if step < len(SURVEY_QUESTIONS):
-            # Сохраняем ответ
             key = SURVEY_QUESTIONS[step]["key"]
             answers = data.get("answers", {})
             answers[key] = text
