@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MAX_BOT_TOKEN=f9LHodD0cOJ_kTz9WIM377D0sRvK07ORn0TibanrXLKdSrKwFxnluQeesQUQXEs6xQ2OoZlcvJryeOvk3-JN
+      - MAX_BOT_TOKEN=f9LHodD0cOIgRoB98OIQNqwfz_Tyjfn0rYl9REwshxQ4Q7-6jwmd_feZ4h98RVjFnUmlKyRYs3Da96qcJgWV
       - ADMIN_CHAT_ID=12018296
       - DEEPSEEK_API_KEY=sk-dd8b8fec6a52478ebcb2c22d38d93af3
       - YKASSA_SHOP_ID=1310983
