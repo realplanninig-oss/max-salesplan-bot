@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX
+# File: main.py — бот Salesplan для MAX (логика Telegram-подобного бота на платформе MAX)
 
 import asyncio
 import logging
@@ -312,15 +312,20 @@ def log_event(user_id: str, event_type: str, event_data: str = None):
     logger.info(f"Event: {event_type} | User: {user_id} | Data: {event_data}")
 
 async def send_message(chat_id: str, text: str, keyboard: list = None):
-    url = f"{MAX_API_URL}/messages"
-    payload = {"chat_id": chat_id, "text": text}
+    """Отправка сообщения пользователю (user_id в query-параметре)"""
+    url = f"{MAX_API_URL}/messages?user_id={chat_id}"
+    payload = {"text": text}
     if keyboard:
-        payload["reply_markup"] = {"inline_keyboard": keyboard}
+        payload["attachments"] = [{
+            "type": "inline_keyboard",
+            "payload": {"buttons": keyboard}
+        }]
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
-                logger.error(f"send_message failed: {await resp.text()}")
+                error_text = await resp.text()
+                logger.error(f"send_message failed: {resp.status} - {error_text}")
             return await resp.json()
 
 async def send_callback_answer(callback_id: str, text: str, keyboard: list = None):
@@ -328,18 +333,22 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
     url = f"{MAX_API_URL}/answers?callback_id={callback_id}"
     payload = {"message": {"text": text}}
     if keyboard:
-        payload["message"]["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": keyboard}}]
+        payload["message"]["attachments"] = [{
+            "type": "inline_keyboard",
+            "payload": {"buttons": keyboard}
+        }]
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
-                logger.error(f"send_callback_answer failed: {await resp.text()}")
+                error_text = await resp.text()
+                logger.error(f"send_callback_answer failed: {resp.status} - {error_text}")
             return await resp.json()
 
 async def send_notification(chat_id: str, text: str):
-    """Отправка одноразового уведомления пользователю"""
-    url = f"{MAX_API_URL}/messages"
-    payload = {"chat_id": chat_id, "text": text}
+    """Отправка одноразового уведомления пользователю (через POST /messages)"""
+    url = f"{MAX_API_URL}/messages?user_id={chat_id}"
+    payload = {"text": text}
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
@@ -382,19 +391,14 @@ async def send_file_message(chat_id: str, text: str, file_path: str, file_type: 
     if not attachment:
         await send_message(chat_id, f"{text}\n\n❌ Файл временно недоступен")
         return
-    url = f"{MAX_API_URL}/messages"
+    url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {
-        "chat_id": chat_id,
         "text": text,
         "attachments": [attachment]
     }
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url,
-            json=payload,
-            headers=headers
-        ) as resp:
+        async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
                 logger.error(f"Failed to send message with attachment: {await resp.text()}")
                 await send_message(chat_id, f"{text}\n\n❌ Не удалось отправить файл")
