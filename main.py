@@ -312,9 +312,18 @@ def log_event(user_id: str, event_type: str, event_data: str = None):
     logger.info(f"Event: {event_type} | User: {user_id} | Data: {event_data}")
 
 async def send_message(chat_id: str, text: str, keyboard: list = None):
-    """Отправка сообщения пользователю (user_id в query-параметре)"""
+    """Отправка сообщения с кнопками (правильный формат)"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
+    if keyboard:
+        payload["attachments"] = [
+            {
+                "type": "inline_keyboard",
+                "payload": {
+                    "buttons": keyboard
+                }
+            }
+        ]
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
@@ -324,7 +333,7 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
             return await resp.json()
 
 async def send_callback_answer(callback_id: str, text: str, keyboard: list = None):
-    """Отправка ответа на callback через POST /answers"""
+    """Отправка ответа на callback (используется для обновления сообщения)"""
     url = f"{MAX_API_URL}/answers?callback_id={callback_id}"
     payload = {"message": {"text": text}}
     if keyboard:
@@ -345,7 +354,7 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
             return await resp.json()
 
 async def send_notification(chat_id: str, text: str):
-    """Отправка одноразового уведомления пользователю (через POST /messages)"""
+    """Отправка одноразового уведомления"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
@@ -447,17 +456,32 @@ async def check_yookassa_payment(payment_id: str):
 def get_main_menu_keyboard():
     return [
         [
-            {"text": "📊 Бесплатный аудит", "callback_data": CALLBACK_START_AUDIT}
+            {
+                "type": "callback",
+                "text": "📊 Бесплатный аудит",
+                "payload": CALLBACK_START_AUDIT,
+                "intent": "default"
+            }
         ]
     ]
 
 def get_after_diagnostic_keyboard():
     return [
         [
-            {"text": "🔥 План продаж за 490 ₽", "callback_data": CALLBACK_MY_PREMIUM}
+            {
+                "type": "callback",
+                "text": "🔥 План продаж за 490 ₽",
+                "payload": CALLBACK_MY_PREMIUM,
+                "intent": "default"
+            }
         ],
         [
-            {"text": "👩‍💼 Бесплатная консультация", "callback_data": CALLBACK_BOOK_CALL}
+            {
+                "type": "callback",
+                "text": "👩‍💼 Бесплатная консультация",
+                "payload": CALLBACK_BOOK_CALL,
+                "intent": "default"
+            }
         ]
     ]
 
@@ -466,54 +490,91 @@ def get_survey_keyboard(question_index: int):
         return None
     q = SURVEY_QUESTIONS[question_index]
     keyboard = []
-    for callback_data, label in q["options"]:
-        keyboard.append([{"text": label, "callback_data": callback_data}])
+    for payload, label in q["options"]:
+        keyboard.append([
+            {
+                "type": "callback",
+                "text": label,
+                "payload": payload,
+                "intent": "default"
+            }
+        ])
     return keyboard
 
 def get_format_choice_keyboard():
     return [
         [
-            {"text": "📝 В сообщении", "callback_data": CALLBACK_SEND_AS_TEXT}
+            {
+                "type": "callback",
+                "text": "📝 В сообщении",
+                "payload": CALLBACK_SEND_AS_TEXT,
+                "intent": "default"
+            }
         ],
         [
-            {"text": "📄 В файле .txt", "callback_data": CALLBACK_SEND_AS_FILE}
-        ]
-    ]
-
-def get_consultation_keyboard():
-    return [
-        [
-            {"text": "📝 Оставить заявку", "callback_data": CALLBACK_BOOK_CALL}
-        ]
-    ]
-
-def get_post_download_keyboard():
-    return [
-        [
-            {"text": "👩‍💼 Разобрать план (30 мин)", "callback_data": CALLBACK_BOOK_CALL}
-        ],
-        [
-            {"text": "📚 Получить мини-курс", "url": "https://t.me/zapuskintelega_bot"}
-        ]
-    ]
-
-def get_channel_subscribe_keyboard():
-    return [
-        [
-            {"text": "📢 Подписаться на канал", "url": "https://max.ru/id781407988795_biz"}
+            {
+                "type": "callback",
+                "text": "📄 В файле .txt",
+                "payload": CALLBACK_SEND_AS_FILE,
+                "intent": "default"
+            }
         ]
     ]
 
 def get_payment_keyboard(confirmation_url: str):
     return [
         [
-            {"text": "💳 Оплатить 490 ₽", "url": confirmation_url}
+            {
+                "type": "link",
+                "text": "💳 Оплатить 490 ₽",
+                "url": confirmation_url
+            }
         ],
         [
-            {"text": "✅ Я оплатил(а)", "callback_data": CALLBACK_I_PAID}
+            {
+                "type": "callback",
+                "text": "✅ Я оплатил(а)",
+                "payload": CALLBACK_I_PAID,
+                "intent": "default"
+            }
         ],
         [
-            {"text": "❓ Помощь", "callback_data": CALLBACK_HELP}
+            {
+                "type": "callback",
+                "text": "❓ Помощь",
+                "payload": CALLBACK_HELP,
+                "intent": "default"
+            }
+        ]
+    ]
+
+def get_post_download_keyboard():
+    return [
+        [
+            {
+                "type": "callback",
+                "text": "👩‍💼 Разобрать план (30 мин)",
+                "payload": CALLBACK_BOOK_CALL,
+                "intent": "default"
+            }
+        ],
+        [
+            {
+                "type": "link",
+                "text": "📚 Получить мини-курс",
+                "url": "https://t.me/zapuskintelega_bot"
+            }
+        ]
+    ]
+
+def get_channel_subscribe_keyboard():
+    return [
+        [
+            {
+                "type": "link",
+                "text": "📢 Подписаться на канал",
+                "url": "https://max.ru/id781407988795_biz"
+            }
         ]
     ]
 
@@ -885,9 +946,8 @@ async def process_message(user_id: str, text: str):
                 "Привет! Я Вероника, продюсер экспертов.\n\n"
                 "Контент вроде делаешь, подписчики есть, а денег нет? Знакомо.\n\n"
                 "Давай сделаем бесплатный аудит твоего канала — 2 минуты, и узнаешь, что теряешь.",
-                None)
-            # Отправляем клавиатуру отдельным сообщением с callback
-            await send_callback_answer(f"start_{user_id}", "Выбери действие:", get_main_menu_keyboard())
+                get_main_menu_keyboard())
+            save_user_state(str(user_id), STATE_MENU, {})
         else:
             await send_message(str(user_id), "Используй кнопки меню или напиши /start")
         return
@@ -908,9 +968,7 @@ async def process_message(user_id: str, text: str):
         save_business_data(str(user_id), business_name, text)
         log_event(str(user_id), "business_data_collected")
         save_user_state(str(user_id), STATE_SURVEY, {"answers": {}, "survey_step": 0})
-        await send_message(str(user_id), SURVEY_QUESTIONS[0]["text"], None)
-        # Отправляем клавиатуру для опроса
-        await send_callback_answer(f"survey_{user_id}", SURVEY_QUESTIONS[0]["text"], get_survey_keyboard(0))
+        await send_message(str(user_id), SURVEY_QUESTIONS[0]["text"], get_survey_keyboard(0))
         return
 
     if state == STATE_SURVEY:
@@ -924,14 +982,13 @@ async def process_message(user_id: str, text: str):
             save_user_state(str(user_id), STATE_SURVEY, data)
             
             if step + 1 < len(SURVEY_QUESTIONS):
-                await send_message(str(user_id), SURVEY_QUESTIONS[step + 1]["text"], None)
-                await send_callback_answer(f"survey_{user_id}", SURVEY_QUESTIONS[step + 1]["text"], get_survey_keyboard(step + 1))
+                await send_message(str(user_id), SURVEY_QUESTIONS[step + 1]["text"], get_survey_keyboard(step + 1))
             else:
                 save_form(str(user_id), answers)
                 log_event(str(user_id), "survey_completed")
                 biz_data = get_business_data(str(user_id))
                 if not biz_data:
-                    await send_message(str(user_id), "❌ Ошибка: данные бизнеса не найдены. Начни заново.", None)
+                    await send_message(str(user_id), "❌ Ошибка: данные бизнеса не найдены. Начни заново.", get_main_menu_keyboard())
                     save_user_state(str(user_id), STATE_MENU, {})
                     return
 
@@ -940,11 +997,9 @@ async def process_message(user_id: str, text: str):
                 if report_text:
                     log_event(str(user_id), "free_report_generated")
                     save_user_state(str(user_id), STATE_MENU, {"generated_report": report_text, "report_title": biz_data["name"]})
-                    await send_message(str(user_id), "✅ Диагностика готова! Как тебе удобнее получить?", None)
-                    await send_callback_answer(f"format_{user_id}", "✅ Диагностика готова! Как тебе удобнее получить?", get_format_choice_keyboard())
+                    await send_message(str(user_id), "✅ Диагностика готова! Как тебе удобнее получить?", get_format_choice_keyboard())
                 else:
-                    await send_message(str(user_id), "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", None)
-                    await send_callback_answer(f"format_{user_id}", "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", get_format_choice_keyboard())
+                    await send_message(str(user_id), "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", get_format_choice_keyboard())
         return
 
     if state == STATE_WAITING_CALL:
@@ -973,8 +1028,8 @@ async def process_message(user_id: str, text: str):
             "📝 Скрипты фраз, которые продают\n\n"
             "После подписки зайди в закреп — там мини-курс «3 шага к первой продаже» в подарок 🎁")
         await send_message(str(user_id),
-            "👇 Жми кнопку, подписывайся и забирай мини-курс", None)
-        await send_callback_answer(f"subscribe_{user_id}", "👇 Жми кнопку, подписывайся и забирай мини-курс", get_channel_subscribe_keyboard())
+            "👇 Жми кнопку, подписывайся и забирай мини-курс",
+            get_channel_subscribe_keyboard())
         save_user_state(str(user_id), STATE_MENU, {})
         return
 
