@@ -316,7 +316,7 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
     payload = {"chat_id": chat_id, "text": text}
     if keyboard:
         payload["reply_markup"] = {"inline_keyboard": keyboard}
-    headers = {"Authorization": f"Bearer {MAX_BOT_TOKEN}", "Content-Type": "application/json"}
+    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
@@ -329,7 +329,7 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
     payload = {"message": {"text": text}}
     if keyboard:
         payload["message"]["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": keyboard}}]
-    headers = {"Authorization": f"Bearer {MAX_BOT_TOKEN}", "Content-Type": "application/json"}
+    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
@@ -340,7 +340,7 @@ async def send_notification(chat_id: str, text: str):
     """Отправка одноразового уведомления пользователю"""
     url = f"{MAX_API_URL}/messages"
     payload = {"chat_id": chat_id, "text": text}
-    headers = {"Authorization": f"Bearer {MAX_BOT_TOKEN}", "Content-Type": "application/json"}
+    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
@@ -351,7 +351,7 @@ async def upload_file_to_max(file_path: str, file_type: str = "file"):
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{MAX_API_URL}/uploads?type={file_type}",
-            headers={"Authorization": f"Bearer {MAX_BOT_TOKEN}"}
+            headers={"Authorization": MAX_BOT_TOKEN}
         ) as resp:
             if resp.status != 200:
                 logger.error(f"Failed to get upload URL: {await resp.text()}")
@@ -388,11 +388,12 @@ async def send_file_message(chat_id: str, text: str, file_path: str, file_type: 
         "text": text,
         "attachments": [attachment]
     }
+    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(
             url,
             json=payload,
-            headers={"Authorization": f"Bearer {MAX_BOT_TOKEN}"}
+            headers=headers
         ) as resp:
             if resp.status != 200:
                 logger.error(f"Failed to send message with attachment: {await resp.text()}")
@@ -528,7 +529,7 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
     data = {
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "Ты Вероika, продюсер экспертов с 8-летним опытом. Говоришь разговорно, с эмодзи, на 'ты'."},
+            {"role": "system", "content": "Ты Вероника, продюсер экспертов с 8-летним опытом. Говоришь разговорно, с эмодзи, на 'ты'."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
