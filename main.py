@@ -722,7 +722,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             await send_callback_answer(callback_id,
                 "Ой, стоп! Сначала нужно пройти бесплатную диагностику, чтобы я поняла, про что твой бизнес.\n\n"
                 "Это быстро — 2 минуты, честно 👇",
-                [[[{"text": "📊 Пройти диагностику", "callback_data": CALLBACK_START_AUDIT}]]])
+                get_main_menu_keyboard())
             return
 
         payment = await create_yookassa_payment(490, "План продаж Salesplan", chat_id)
@@ -1063,7 +1063,9 @@ async def webhook(request: Request):
             cb = payload["callback_query"]
             user_id = cb.get("user", {}).get("id")
             callback_id = cb.get("callback_id")
-            data = cb.get("data")
+            # ВАЖНО: читаем payload, а не data
+            data = cb.get("payload")
+            logger.info(f"CALLBACK RECEIVED: user_id={user_id}, callback_id={callback_id}, payload={data}")
             if user_id and data:
                 await process_callback(str(user_id), str(callback_id), data)
 
