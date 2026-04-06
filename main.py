@@ -316,10 +316,9 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
     if keyboard:
-        payload["attachments"] = [{
-            "type": "inline_keyboard",
-            "payload": {"buttons": keyboard}
-        }]
+        payload["reply_markup"] = {
+            "inline_keyboard": keyboard
+        }
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
@@ -333,10 +332,9 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
     url = f"{MAX_API_URL}/answers?callback_id={callback_id}"
     payload = {"message": {"text": text}}
     if keyboard:
-        payload["message"]["attachments"] = [{
-            "type": "inline_keyboard",
-            "payload": {"buttons": keyboard}
-        }]
+        payload["message"]["reply_markup"] = {
+            "inline_keyboard": keyboard
+        }
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
@@ -353,7 +351,8 @@ async def send_notification(chat_id: str, text: str):
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
-                logger.error(f"send_notification failed: {await resp.text()}")
+                error_text = await resp.text()
+                logger.error(f"send_notification failed: {resp.status} - {error_text}")
             return await resp.json()
 
 async def upload_file_to_max(file_path: str, file_type: str = "file"):
