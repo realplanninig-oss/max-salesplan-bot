@@ -315,15 +315,6 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
     """Отправка сообщения пользователю (user_id в query-параметре)"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
-    if keyboard:
-        payload["attachments"] = [
-            {
-                "type": "inline_keyboard",
-                "payload": {
-                    "buttons": keyboard
-                }
-            }
-        ]
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
@@ -894,8 +885,9 @@ async def process_message(user_id: str, text: str):
                 "Привет! Я Вероника, продюсер экспертов.\n\n"
                 "Контент вроде делаешь, подписчики есть, а денег нет? Знакомо.\n\n"
                 "Давай сделаем бесплатный аудит твоего канала — 2 минуты, и узнаешь, что теряешь.",
-                get_main_menu_keyboard())
-            save_user_state(str(user_id), STATE_MENU, {})
+                None)
+            # Отправляем клавиатуру отдельным сообщением с callback
+            await send_callback_answer(f"start_{user_id}", "Выбери действие:", get_main_menu_keyboard())
         else:
             await send_message(str(user_id), "Используй кнопки меню или напиши /start")
         return
@@ -916,7 +908,9 @@ async def process_message(user_id: str, text: str):
         save_business_data(str(user_id), business_name, text)
         log_event(str(user_id), "business_data_collected")
         save_user_state(str(user_id), STATE_SURVEY, {"answers": {}, "survey_step": 0})
-        await send_message(str(user_id), SURVEY_QUESTIONS[0]["text"], get_survey_keyboard(0))
+        await send_message(str(user_id), SURVEY_QUESTIONS[0]["text"], None)
+        # Отправляем клавиатуру для опроса
+        await send_callback_answer(f"survey_{user_id}", SURVEY_QUESTIONS[0]["text"], get_survey_keyboard(0))
         return
 
     if state == STATE_SURVEY:
@@ -930,13 +924,14 @@ async def process_message(user_id: str, text: str):
             save_user_state(str(user_id), STATE_SURVEY, data)
             
             if step + 1 < len(SURVEY_QUESTIONS):
-                await send_message(str(user_id), SURVEY_QUESTIONS[step + 1]["text"], get_survey_keyboard(step + 1))
+                await send_message(str(user_id), SURVEY_QUESTIONS[step + 1]["text"], None)
+                await send_callback_answer(f"survey_{user_id}", SURVEY_QUESTIONS[step + 1]["text"], get_survey_keyboard(step + 1))
             else:
                 save_form(str(user_id), answers)
                 log_event(str(user_id), "survey_completed")
                 biz_data = get_business_data(str(user_id))
                 if not biz_data:
-                    await send_message(str(user_id), "❌ Ошибка: данные бизнеса не найдены. Начни заново.", get_main_menu_keyboard())
+                    await send_message(str(user_id), "❌ Ошибка: данные бизнеса не найдены. Начни заново.", None)
                     save_user_state(str(user_id), STATE_MENU, {})
                     return
 
@@ -945,9 +940,11 @@ async def process_message(user_id: str, text: str):
                 if report_text:
                     log_event(str(user_id), "free_report_generated")
                     save_user_state(str(user_id), STATE_MENU, {"generated_report": report_text, "report_title": biz_data["name"]})
-                    await send_message(str(user_id), "✅ Диагностика готова! Как тебе удобнее получить?", get_format_choice_keyboard())
+                    await send_message(str(user_id), "✅ Диагностика готова! Как тебе удобнее получить?", None)
+                    await send_callback_answer(f"format_{user_id}", "✅ Диагностика готова! Как тебе удобнее получить?", get_format_choice_keyboard())
                 else:
-                    await send_message(str(user_id), "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", get_format_choice_keyboard())
+                    await send_message(str(user_id), "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", None)
+                    await send_callback_answer(f"format_{user_id}", "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", get_format_choice_keyboard())
         return
 
     if state == STATE_WAITING_CALL:
@@ -976,8 +973,8 @@ async def process_message(user_id: str, text: str):
             "📝 Скрипты фраз, которые продают\n\n"
             "После подписки зайди в закреп — там мини-курс «3 шага к первой продаже» в подарок 🎁")
         await send_message(str(user_id),
-            "👇 Жми кнопку, подписывайся и забирай мини-курс",
-            get_channel_subscribe_keyboard())
+            "👇 Жми кнопку, подписывайся и забирай мини-курс", None)
+        await send_callback_answer(f"subscribe_{user_id}", "👇 Жми кнопку, подписывайся и забирай мини-курс", get_channel_subscribe_keyboard())
         save_user_state(str(user_id), STATE_MENU, {})
         return
 
