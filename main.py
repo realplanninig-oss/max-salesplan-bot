@@ -1,6 +1,4 @@
 # File: main.py — бот Salesplan для MAX
-# Оплата через ЮKassa (песочница) — тестовый режим
-# После регистрации в ЮKassa замените shop_id и secret_key на рабочие
 
 import asyncio
 import logging
@@ -22,23 +20,19 @@ import aiofiles
 load_dotenv()
 
 # === КОНФИГУРАЦИЯ ===
-MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")           # Токен бота из платформы MAX
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")           # Ваш ID в MAX (для уведомлений)
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")     # Ключ DeepSeek
+MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "test")
+YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "test")
+YKASSA_TEST_MODE = os.getenv("YKASSA_TEST_MODE", "true").lower() == "true"
 
-# ЮKassa настройки (тестовый режим)
-YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "test")           # ID магазина (для теста: "test")
-YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "test")     # Секретный ключ (для теста: "test")
-YKASSA_TEST_MODE = os.getenv("YKASSA_TEST_MODE", "true").lower() == "true"  # Тестовый режим
+MAX_API_URL = "https://platform-api.max.ru"
+YKASSA_API_URL = "https://api.yookassa.ru/v3"
 
-MAX_API_URL = "https://platform-api.max.ru"          # Базовый URL API MAX
-YKASSA_API_URL = "https://api.yookassa.ru/v3"        # ЮKassa API
-
-# Проверка переменных
 if not MAX_BOT_TOKEN:
     raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in .env")
 
-# === НАСТРОЙКА ЛОГИРОВАНИЯ ===
 LOGS_DIR = Path("./logs")
 LOGS_DIR.mkdir(exist_ok=True)
 
@@ -52,19 +46,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# === БАЗА ДАННЫХ ===
 DB_PATH = "salesplan.db"
 REPORTS_DIR = Path("./reports")
 REPORTS_DIR.mkdir(exist_ok=True)
 
-# Состояния
 STATE_MENU = "menu"
 STATE_AWAITING_BUSINESS_NAME = "awaiting_business_name"
 STATE_AWAITING_BUSINESS_DESCRIPTION = "awaiting_business_description"
 STATE_SURVEY = "survey"
 STATE_WAITING_CALL = "waiting_call"
 
-# Callback данные
 CALLBACK_START_AUDIT = "start_audit"
 CALLBACK_MY_PREMIUM = "my_premium"
 CALLBACK_I_PAID = "i_paid"
@@ -74,7 +65,6 @@ CALLBACK_SEND_AS_TEXT = "send_as_text"
 CALLBACK_SEND_AS_FILE = "send_as_file"
 CALLBACK_HELP = "help"
 
-# Вопросы опроса
 Q1_SERVICE = "q1_service"
 Q1_INFO = "q1_info"
 Q1_CONSULT = "q1_consult"
@@ -127,7 +117,6 @@ SURVEY_QUESTIONS = [
     ]},
 ]
 
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 def get_moscow_time():
     return datetime.utcnow() + timedelta(hours=3)
 
@@ -196,7 +185,6 @@ def init_db():
 
 init_db()
 
-# === РАБОТА С БАЗОЙ ДАННЫХ ===
 def get_user_state(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute("SELECT state, data FROM user_state WHERE user_id = ?", (user_id,))
@@ -224,7 +212,7 @@ def save_business_data(user_id: str, name: str, description: str):
     conn.commit()
     conn.close()
 
-def get_business_data(user_id: str) -> Optional[Dict[str, str]]:
+def get_business_data(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute(
         "SELECT business_name, business_description FROM business_data WHERE user_id = ?",
@@ -236,7 +224,7 @@ def get_business_data(user_id: str) -> Optional[Dict[str, str]]:
         return {"name": row[0], "description": row[1]}
     return None
 
-def save_form(user_id: str, answers: Dict[str, str]):
+def save_form(user_id: str, answers: dict):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         INSERT OR REPLACE INTO forms (user_id, q1, q2, q3, q4, q5)
@@ -246,7 +234,7 @@ def save_form(user_id: str, answers: Dict[str, str]):
     conn.commit()
     conn.close()
 
-def get_form(user_id: str) -> Optional[Dict[str, str]]:
+def get_form(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute(
         "SELECT q1, q2, q3, q4, q5 FROM forms WHERE user_id = ?",
@@ -281,7 +269,7 @@ def update_report_status(report_id: int, status: str, file_path: str = None):
     conn.commit()
     conn.close()
 
-def get_report_status(user_id: str) -> Optional[Dict[str, Any]]:
+def get_report_status(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute("""
         SELECT id, status, file_path, ready_at FROM reports
@@ -303,7 +291,7 @@ def save_pending_payment(user_id: str, payment_id: str):
     conn.commit()
     conn.close()
 
-def get_pending_payment(user_id: str) -> Optional[str]:
+def get_pending_payment(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute(
         "SELECT payment_id FROM pending_payments WHERE user_id = ?",
@@ -322,9 +310,7 @@ def clear_pending_payment(user_id: str):
 def log_event(user_id: str, event_type: str, event_data: str = None):
     logger.info(f"Event: {event_type} | User: {user_id} | Data: {event_data}")
 
-# === ФУНКЦИИ ДЛЯ РАБОТЫ С MAX API ===
 async def send_message(chat_id: str, text: str, keyboard: list = None):
-    """Отправка текстового сообщения"""
     url = f"{MAX_API_URL}/messages"
     payload = {"chat_id": chat_id, "text": text}
     if keyboard:
@@ -337,7 +323,6 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
             return await resp.json()
 
 async def edit_message(chat_id: str, message_id: str, text: str, keyboard: list = None):
-    """Редактирование сообщения"""
     url = f"{MAX_API_URL}/messages"
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
     if keyboard:
@@ -349,8 +334,7 @@ async def edit_message(chat_id: str, message_id: str, text: str, keyboard: list 
                 logger.error(f"edit_message failed: {await resp.text()}")
             return await resp.json()
 
-async def upload_file_to_max(file_path: str, file_type: str = "file") -> Optional[Dict]:
-    """Загружает файл на сервер MAX"""
+async def upload_file_to_max(file_path: str, file_type: str = "file"):
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{MAX_API_URL}/uploads?type={file_type}",
@@ -368,13 +352,11 @@ async def upload_file_to_max(file_path: str, file_type: str = "file") -> Optiona
         with open(file_path, 'rb') as f:
             form_data = aiohttp.FormData()
             form_data.add_field('data', f, filename=Path(file_path).name)
-            
             async with session.post(upload_url, data=form_data) as resp:
                 if resp.status != 200:
                     logger.error(f"Failed to upload file: {await resp.text()}")
                     return None
                 result = await resp.json()
-                
                 if "token" in result:
                     return {"type": file_type, "payload": {"token": result["token"]}}
                 elif "result" in result and "url" in result["result"]:
@@ -383,19 +365,16 @@ async def upload_file_to_max(file_path: str, file_type: str = "file") -> Optiona
                     return {"type": file_type, "payload": result}
 
 async def send_file_message(chat_id: str, text: str, file_path: str, file_type: str = "file"):
-    """Отправляет сообщение с прикрепленным файлом"""
     attachment = await upload_file_to_max(file_path, file_type)
     if not attachment:
         await send_message(chat_id, f"{text}\n\n❌ Файл временно недоступен")
         return
-    
     url = f"{MAX_API_URL}/messages"
     payload = {
         "chat_id": chat_id,
         "text": text,
         "attachments": [attachment]
     }
-    
     async with aiohttp.ClientSession() as session:
         async with session.post(
             url,
@@ -407,39 +386,17 @@ async def send_file_message(chat_id: str, text: str, file_path: str, file_type: 
                 await send_message(chat_id, f"{text}\n\n❌ Не удалось отправить файл")
             return await resp.json()
 
-# === ФУНКЦИИ ДЛЯ РАБОТЫ С ЮKASSA ===
-async def create_yookassa_payment(amount: int, description: str, user_id: str) -> Optional[Dict[str, str]]:
-    """
-    Создаёт платёж в ЮKassa.
-    Возвращает {"payment_id": "...", "confirmation_url": "..."}
-    """
-    # Уникальный ID платежа
+async def create_yookassa_payment(amount: int, description: str, user_id: str):
     payment_id = f"salesplan_{user_id}_{uuid.uuid4().hex[:8]}"
-    
-    # Данные для платежа
     payload = {
-        "amount": {
-            "value": f"{amount}.00",
-            "currency": "RUB"
-        },
-        "payment_method_data": {
-            "type": "bank_card"
-        },
-        "confirmation": {
-            "type": "redirect",
-            "return_url": "https://max.ru"  # После оплаты вернётся в MAX
-        },
+        "amount": {"value": f"{amount}.00", "currency": "RUB"},
+        "payment_method_data": {"type": "bank_card"},
+        "confirmation": {"type": "redirect", "return_url": "https://max.ru"},
         "description": description,
         "capture": True,
-        "metadata": {
-            "user_id": user_id,
-            "payment_id": payment_id
-        }
+        "metadata": {"user_id": user_id, "payment_id": payment_id}
     }
-    
-    # Базовые учётные данные
     auth = aiohttp.BasicAuth(YKASSA_SHOP_ID, YKASSA_SECRET_KEY)
-    
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{YKASSA_API_URL}/payments",
@@ -449,19 +406,14 @@ async def create_yookassa_payment(amount: int, description: str, user_id: str) -
         ) as resp:
             if resp.status in (200, 201):
                 data = await resp.json()
-                return {
-                    "payment_id": data["id"],
-                    "confirmation_url": data["confirmation"]["confirmation_url"]
-                }
+                return {"payment_id": data["id"], "confirmation_url": data["confirmation"]["confirmation_url"]}
             else:
                 error_text = await resp.text()
                 logger.error(f"YooKassa error: {resp.status} - {error_text}")
                 return None
 
-async def check_yookassa_payment(payment_id: str) -> Optional[str]:
-    """Проверяет статус платежа в ЮKassa. Возвращает 'succeeded', 'pending', 'canceled' или None"""
+async def check_yookassa_payment(payment_id: str):
     auth = aiohttp.BasicAuth(YKASSA_SHOP_ID, YKASSA_SECRET_KEY)
-    
     async with aiohttp.ClientSession() as session:
         async with session.get(
             f"{YKASSA_API_URL}/payments/{payment_id}",
@@ -474,7 +426,6 @@ async def check_yookassa_payment(payment_id: str) -> Optional[str]:
                 logger.error(f"Failed to check payment: {await resp.text()}")
                 return None
 
-# === КЛАВИАТУРЫ ===
 def get_main_menu_keyboard():
     return [[[{"text": "📊 Бесплатный аудит", "callback_data": CALLBACK_START_AUDIT}]]]
 
@@ -509,25 +460,21 @@ def get_post_download_keyboard():
     ]
 
 def get_channel_subscribe_keyboard():
-    """Кнопка подписки на канал в MAX"""
     return [[[{"text": "📢 Подписаться на канал", "url": "https://max.ru/id781407988795_biz"}]]]
 
 def get_payment_keyboard(confirmation_url: str):
-    """Клавиатура с ссылкой на оплату"""
     return [
         [{"text": f"💳 Оплатить 490 ₽", "url": confirmation_url}],
         [{"text": "✅ Я оплатил(а)", "callback_data": CALLBACK_I_PAID}],
         [{"text": "❓ Помощь", "callback_data": CALLBACK_HELP}]
     ]
 
-# === ГЕНЕРАЦИЯ ОТЧЕТОВ (DeepSeek) ===
-async def call_deepseek_diagnostic(name: str, description: str, answers: Dict[str, str]) -> Optional[str]:
+async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
     q1_map = {Q1_SERVICE: "Услугу", Q1_INFO: "Инфопродукт", Q1_CONSULT: "Консультацию", Q1_NONE: "Пока не продаю"}
     q2_map = {Q2_LT5: "до 5k", Q2_5_20: "5k-20k", Q2_20_50: "20k-50k", Q2_50P: ">50k"}
     q3_map = {Q3_LT1K: "<10 клиентов", Q3_1_5K: "10-50", Q3_5_20K: "50-200", Q3_20KP: ">200"}
     q4_map = {Q4_300: "300k/мес", Q4_500: "500k/мес", Q4_1M: "1M/мес", Q4_SCALE: "Масштаб"}
     q5_map = {Q5_YES: "да", Q5_NO: "нет", Q5_PROGRESS: "в разработке"}
-
     survey_info = f"""
 ДАННЫЕ О БИЗНЕСЕ:
 • Продаёт: {q1_map.get(answers.get('q1'), 'не указано')}
@@ -536,7 +483,6 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: Dict[st
 • Цель на 2026: {q4_map.get(answers.get('q4'), 'не указано')}
 • Автоворонка: {q5_map.get(answers.get('q5'), 'не указано')}
 """
-
     prompt = f"""Сделай профессиональный маркетинговый разбор онлайн-бизнеса на основе предоставленных данных.
 
 ДАННЫЕ О БИЗНЕСЕ:
@@ -564,7 +510,6 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: Dict[st
 - Для списков используй дефисы (-)
 - В разделе "Целевая аудитория" обязательно опиши: кто это, их главная проблема, какое решение ищут
 - В третьем разделе обязательно дай рекомендацию по настройке простой воронки продаж"""
-
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     data = {
@@ -576,7 +521,6 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: Dict[st
         "temperature": 0.7,
         "max_tokens": 2000
     }
-
     try:
         response = requests.post(url, headers=headers, json=data, timeout=120)
         if response.status_code == 200:
@@ -589,14 +533,13 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: Dict[st
         logger.error(f"DeepSeek failed: {e}")
         return None
 
-async def generate_premium_report(user_id: str, name: str, description: str, answers: Dict[str, str], report_id: int):
+async def generate_premium_report(user_id: str, name: str, description: str, answers: dict, report_id: int):
     logger.info(f"Generating premium report for {user_id}")
     q1_map = {Q1_SERVICE: "Услугу", Q1_INFO: "Инфопродукт", Q1_CONSULT: "Консультацию", Q1_NONE: "Пока не продаю"}
     q2_map = {Q2_LT5: "до 5k", Q2_5_20: "5k-20k", Q2_20_50: "20k-50k", Q2_50P: ">50k"}
     q3_map = {Q3_LT1K: "<10", Q3_1_5K: "10-50", Q3_5_20K: "50-200", Q3_20KP: ">200"}
     q4_map = {Q4_300: "300k/мес", Q4_500: "500k/мес", Q4_1M: "1M/мес", Q4_SCALE: "Масштаб"}
     q5_map = {Q5_YES: "да", Q5_NO: "нет", Q5_PROGRESS: "в разработке"}
-
     survey_info = f"""
 ДАННЫЕ О БИЗНЕСЕ:
 • Продаёт: {q1_map.get(answers.get('q1'), 'не указано')}
@@ -605,7 +548,6 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
 • Цель: {q4_map.get(answers.get('q4'), 'не указано')}
 • Автоворонка: {q5_map.get(answers.get('q5'), 'не указано')}
 """
-
     prompt = f"""Сделай план продаж для онлайн-бизнеса.
 
 ДАННЫЕ:
@@ -626,7 +568,6 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
 - Заголовки ЗАГЛАВНЫМИ БУКВАМИ, отступы пустыми строками
 - Списки через дефисы
 - Пиши живо, с эмодзи, как Вероника"""
-
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     data = {
@@ -638,7 +579,6 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
         "temperature": 0.7,
         "max_tokens": 4000
     }
-
     try:
         response = requests.post(url, headers=headers, json=data, timeout=180)
         if response.status_code == 200:
@@ -655,12 +595,10 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
         logger.error(f"Premium report error: {e}")
         update_report_status(report_id, 'failed')
 
-# === ОБРАБОТЧИКИ ===
 async def process_callback(chat_id: str, message_id: str, callback_data: str):
     state, data = get_user_state(chat_id)
     log_event(chat_id, f"callback_{callback_data}")
 
-    # СТАРТ АУДИТА
     if callback_data == CALLBACK_START_AUDIT:
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {"answers": {}, "survey_step": 0})
         await edit_message(chat_id, message_id,
@@ -668,7 +606,6 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
             None)
         return
 
-    # ЗАПРОС ПЛАНА ПРОДАЖ (создаём платёж в ЮKassa)
     if callback_data == CALLBACK_MY_PREMIUM:
         biz_data = get_business_data(chat_id)
         form_data = get_form(chat_id)
@@ -679,13 +616,9 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
                 [[[{"text": "📊 Пройти диагностику", "callback_data": CALLBACK_START_AUDIT}]]])
             return
 
-        # Создаём платёж в ЮKassa
         payment = await create_yookassa_payment(490, "План продаж Salesplan", chat_id)
-        
         if payment and payment.get("confirmation_url"):
-            # Сохраняем ID платежа для проверки
             save_pending_payment(chat_id, payment["payment_id"])
-            
             await edit_message(chat_id, message_id,
                 "🔍 Так, уже запускаю генерацию твоего плана продаж... Обычно это занимает 5-10 минут.\n\n"
                 "А пока план готовится, давай честно.\n\n"
@@ -709,7 +642,6 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
         asyncio.create_task(generate_premium_report(chat_id, biz_data["name"], biz_data["description"], form_data, report_id))
         return
 
-    # ОПЛАТА ПОДТВЕРЖДЕНА (проверяем статус в ЮKassa)
     if callback_data == CALLBACK_I_PAID:
         payment_id = get_pending_payment(chat_id)
         if payment_id:
@@ -717,12 +649,9 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
             if status == "succeeded":
                 log_event(chat_id, "payment_made", payment_id)
                 clear_pending_payment(chat_id)
-                
-                # Уведомление админу
                 biz_data = get_business_data(chat_id)
                 await send_message(ADMIN_CHAT_ID,
                     f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {chat_id}\nБизнес: {biz_data['name'] if biz_data else 'не указан'}\nСумма: 490 ₽\n⏰ {format_moscow_time()}")
-                
                 report_status = get_report_status(chat_id)
                 if report_status and report_status['status'] == 'ready':
                     await edit_message(chat_id, message_id,
@@ -750,7 +679,6 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
                 [[[{"text": "💳 Оплатить 490 ₽", "callback_data": CALLBACK_MY_PREMIUM}]]])
         return
 
-    # СКАЧИВАНИЕ ПЛАНА
     if callback_data == CALLBACK_DOWNLOAD_REPORT:
         report_status = get_report_status(chat_id)
         if report_status and report_status['status'] == 'ready' and report_status['file_path']:
@@ -781,7 +709,6 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
                 [[[{"text": "❓ Помощь", "callback_data": CALLBACK_HELP}]]])
         return
 
-    # ПОМОЩЬ
     if callback_data == CALLBACK_HELP:
         await send_message(ADMIN_CHAT_ID, f"❓ Запрос помощи от {chat_id}\n⏰ {format_moscow_time()}")
         await edit_message(chat_id, message_id,
@@ -789,7 +716,6 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
             None)
         return
 
-    # ЗАПИСЬ НА КОНСУЛЬТАЦИЮ
     if callback_data == CALLBACK_BOOK_CALL:
         save_user_state(chat_id, STATE_WAITING_CALL, {})
         await edit_message(chat_id, message_id,
@@ -814,7 +740,6 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
             None)
         return
 
-    # ОБРАБОТКА ВОПРОСОВ ОПРОСА
     if callback_data in [Q1_SERVICE, Q1_INFO, Q1_CONSULT, Q1_NONE,
                          Q2_LT5, Q2_5_20, Q2_20_50, Q2_50P,
                          Q3_LT1K, Q3_1_5K, Q3_5_20K, Q3_20KP,
@@ -860,7 +785,6 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
                         get_format_choice_keyboard())
         return
 
-    # ФОРМАТ ОТЧЕТА — ТЕКСТ
     if callback_data == CALLBACK_SEND_AS_TEXT:
         _, user_data = get_user_state(chat_id)
         report_text = user_data.get("generated_report")
@@ -879,7 +803,6 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
         save_user_state(chat_id, STATE_MENU, {})
         return
 
-    # ФОРМАТ ОТЧЕТА — ФАЙЛ
     if callback_data == CALLBACK_SEND_AS_FILE:
         _, user_data = get_user_state(chat_id)
         report_text = user_data.get("generated_report")
@@ -889,14 +812,12 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
             filepath = REPORTS_DIR / filename
             async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
                 await f.write(report_text)
-            
             await send_file_message(
                 chat_id,
                 "📄 Твоя бесплатная диагностика",
                 str(filepath),
                 "file"
             )
-        
         await send_message(chat_id,
             "🔥 Ну как тебе?\n\n"
             "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
@@ -961,7 +882,6 @@ async def process_message(chat_id: str, text: str):
 
     await send_message(chat_id, "Используй кнопки меню или напиши /start")
 
-# === ВЕБ-СЕРВЕР ДЛЯ MAX ===
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
