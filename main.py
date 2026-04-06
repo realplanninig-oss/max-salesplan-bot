@@ -896,7 +896,7 @@ app = FastAPI(title="Salesplan Bot for MAX", lifespan=lifespan)
 async def webhook(request: Request):
     try:
         payload = await request.json()
-        logger.debug(f"Webhook received: {payload}")
+        logger.info(f"FULL PAYLOAD: {payload}")
 
         if "message" in payload:
             msg = payload["message"]
