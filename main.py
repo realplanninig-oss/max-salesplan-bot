@@ -312,7 +312,6 @@ def log_event(user_id: str, event_type: str, event_data: str = None):
     logger.info(f"Event: {event_type} | User: {user_id} | Data: {event_data}")
 
 async def send_message(chat_id: str, text: str, keyboard: list = None):
-    logger.info(f"MAX_BOT_TOKEN first 10 chars: {MAX_BOT_TOKEN[:10] if MAX_BOT_TOKEN else 'NOT SET'}")
     url = f"{MAX_API_URL}/messages"
     payload = {"chat_id": chat_id, "text": text}
     if keyboard:
@@ -324,16 +323,28 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
                 logger.error(f"send_message failed: {await resp.text()}")
             return await resp.json()
 
-async def edit_message(chat_id: str, message_id: str, text: str, keyboard: list = None):
-    url = f"{MAX_API_URL}/messages"
-    payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+async def send_callback_answer(callback_id: str, text: str, keyboard: list = None):
+    """Отправка ответа на callback через POST /answers"""
+    url = f"{MAX_API_URL}/answers?callback_id={callback_id}"
+    payload = {"message": {"text": text}}
     if keyboard:
-        payload["reply_markup"] = {"inline_keyboard": keyboard}
+        payload["message"]["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": keyboard}}]
     headers = {"Authorization": f"Bearer {MAX_BOT_TOKEN}", "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
-        async with session.put(url, json=payload, headers=headers) as resp:
+        async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
-                logger.error(f"edit_message failed: {await resp.text()}")
+                logger.error(f"send_callback_answer failed: {await resp.text()}")
+            return await resp.json()
+
+async def send_notification(chat_id: str, text: str):
+    """Отправка одноразового уведомления пользователю"""
+    url = f"{MAX_API_URL}/messages"
+    payload = {"chat_id": chat_id, "text": text}
+    headers = {"Authorization": f"Bearer {MAX_BOT_TOKEN}", "Content-Type": "application/json"}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status != 200:
+                logger.error(f"send_notification failed: {await resp.text()}")
             return await resp.json()
 
 async def upload_file_to_max(file_path: str, file_type: str = "file"):
@@ -517,7 +528,7 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
     data = {
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "Ты Вероника, продюсер экспертов с 8-летним опытом. Говоришь разговорно, с эмодзи, на 'ты'."},
+            {"role": "system", "content": "Ты Вероika, продюсер экспертов с 8-летним опытом. Говоришь разговорно, с эмодзи, на 'ты'."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
@@ -597,13 +608,13 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
         logger.error(f"Premium report error: {e}")
         update_report_status(report_id, 'failed')
 
-async def process_callback(chat_id: str, message_id: str, callback_data: str):
+async def process_callback(chat_id: str, callback_id: str, callback_data: str):
     state, data = get_user_state(chat_id)
     log_event(chat_id, f"callback_{callback_data}")
 
     if callback_data == CALLBACK_START_AUDIT:
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {"answers": {}, "survey_step": 0})
-        await edit_message(chat_id, message_id,
+        await send_callback_answer(callback_id,
             "Окей, погнали! 🚀\n\nНапиши название своего онлайн-бизнеса (как ты представляешь его клиентам):",
             None)
         return
@@ -612,7 +623,7 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
         biz_data = get_business_data(chat_id)
         form_data = get_form(chat_id)
         if not biz_data or not form_data:
-            await edit_message(chat_id, message_id,
+            await send_callback_answer(callback_id,
                 "Ой, стоп! Сначала нужно пройти бесплатную диагностику, чтобы я поняла, про что твой бизнес.\n\n"
                 "Это быстро — 2 минуты, честно 👇",
                 [[[{"text": "📊 Пройти диагностику", "callback_data": CALLBACK_START_AUDIT}]]])
@@ -621,7 +632,7 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
         payment = await create_yookassa_payment(490, "План продаж Salesplan", chat_id)
         if payment and payment.get("confirmation_url"):
             save_pending_payment(chat_id, payment["payment_id"])
-            await edit_message(chat_id, message_id,
+            await send_callback_answer(callback_id,
                 "🔍 Так, уже запускаю генерацию твоего плана продаж... Обычно это занимает 5-10 минут.\n\n"
                 "А пока план готовится, давай честно.\n\n"
                 "Ты получила бесплатную диагностику — и что дальше? \n"
@@ -635,7 +646,7 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
                 "👇 Оплати по кнопке — и план сразу станет доступен для скачивания",
                 get_payment_keyboard(payment["confirmation_url"]))
         else:
-            await edit_message(chat_id, message_id,
+            await send_callback_answer(callback_id,
                 "❌ Ошибка при создании платежа. Попробуй позже или нажми «Помощь».",
                 [[[{"text": "❓ Помощь", "callback_data": CALLBACK_HELP}]]])
             return
@@ -652,31 +663,31 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
                 log_event(chat_id, "payment_made", payment_id)
                 clear_pending_payment(chat_id)
                 biz_data = get_business_data(chat_id)
-                await send_message(ADMIN_CHAT_ID,
+                await send_notification(ADMIN_CHAT_ID,
                     f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {chat_id}\nБизнес: {biz_data['name'] if biz_data else 'не указан'}\nСумма: 490 ₽\n⏰ {format_moscow_time()}")
                 report_status = get_report_status(chat_id)
                 if report_status and report_status['status'] == 'ready':
-                    await edit_message(chat_id, message_id,
+                    await send_callback_answer(callback_id,
                         "🎉 Ура! Твой план продаж готов!\n\n"
                         "Я подготовила для тебя персональную стратегию с анализом конкурентов и пошаговым планом.\n\n"
                         "👇 Жми кнопку ниже — и забирай результат",
                         [[[{"text": "📥 Скачать план", "callback_data": CALLBACK_DOWNLOAD_REPORT}]]])
                 else:
-                    await edit_message(chat_id, message_id,
+                    await send_callback_answer(callback_id,
                         "✅ Оплата прошла, спасибо!\n\n"
                         "План ещё готовится — обычно 5-10 минут. Я пришлю уведомление, как только всё будет готово.",
                         [[[{"text": "❓ Помощь", "callback_data": CALLBACK_HELP}]]])
             elif status == "pending":
-                await edit_message(chat_id, message_id,
+                await send_callback_answer(callback_id,
                     "⏳ Платёж ещё не подтверждён. Подожди немного и нажми «Я оплатил(а)» снова.\n\n"
                     "Если деньги уже списались — нажми «Помощь», я проверю вручную.",
                     [[[{"text": "❓ Помощь", "callback_data": CALLBACK_HELP}]]])
             else:
-                await edit_message(chat_id, message_id,
+                await send_callback_answer(callback_id,
                     "❌ Платёж не найден или отменён. Попробуй оплатить снова.",
                     [[[{"text": "💳 Оплатить 490 ₽", "callback_data": CALLBACK_MY_PREMIUM}]]])
         else:
-            await edit_message(chat_id, message_id,
+            await send_callback_answer(callback_id,
                 "❌ Не могу найти информацию о платеже. Попробуй оплатить снова.",
                 [[[{"text": "💳 Оплатить 490 ₽", "callback_data": CALLBACK_MY_PREMIUM}]]])
         return
@@ -692,35 +703,35 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
                     str(filepath),
                     "file"
                 )
-                await send_message(chat_id,
+                await send_notification(chat_id,
                     "🔥 Ну что, прочитала план?\n\n"
                     "Давай начистоту — ты сможешь всё это внедрить сама?\n"
                     "Я ж знаю эту боль: информации много, а результата нет.\n\n"
                     "Поэтому я предлагаю:\n"
                     "✅ Приходи на 30-минутный разбор плана\n"
                     "✅ Я найду ТВОЁ одно действие, которое принесёт деньги прямо сейчас\n"
-                    "🎁 А пока думаешь, забери бесплатный мини-курс «3 шага к первой продаже»",
-                    get_post_download_keyboard())
+                    "🎁 А пока думаешь, забери бесплатный мини-курс «3 шага к первой продаже»")
+                await send_message(chat_id, "👇 Жми кнопку, получи мини-курс", get_post_download_keyboard())
             else:
-                await edit_message(chat_id, message_id,
+                await send_callback_answer(callback_id,
                     "❌ Ой, файл не найден. Напиши мне в личные сообщения — поможем.",
                     get_main_menu_keyboard())
         else:
-            await edit_message(chat_id, message_id,
+            await send_callback_answer(callback_id,
                 "⏳ План ещё готовится. Обычно 5-10 минут.\n\nЕсли прошло больше — нажми кнопку помощи 👇",
                 [[[{"text": "❓ Помощь", "callback_data": CALLBACK_HELP}]]])
         return
 
     if callback_data == CALLBACK_HELP:
-        await send_message(ADMIN_CHAT_ID, f"❓ Запрос помощи от {chat_id}\n⏰ {format_moscow_time()}")
-        await edit_message(chat_id, message_id,
+        await send_notification(ADMIN_CHAT_ID, f"❓ Запрос помощи от {chat_id}\n⏰ {format_moscow_time()}")
+        await send_callback_answer(callback_id,
             "✅ Запрос отправлен! Я свяжусь с тобой в ближайшее время.",
             None)
         return
 
     if callback_data == CALLBACK_BOOK_CALL:
         save_user_state(chat_id, STATE_WAITING_CALL, {})
-        await edit_message(chat_id, message_id,
+        await send_callback_answer(callback_id,
             "Привет! Я Вероника Макаревич.\n\n"
             "8 лет назад я начинала с нуля, а сегодня у моих клиентов запуски на 2 млн за 2 недели.\n\n"
             "Я помогаю экспертам перестать мучиться и начать просто продавать.\n\n"
@@ -756,7 +767,7 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
             save_user_state(chat_id, STATE_SURVEY, user_data)
 
             if step + 1 < len(SURVEY_QUESTIONS):
-                await edit_message(chat_id, message_id,
+                await send_callback_answer(callback_id,
                     SURVEY_QUESTIONS[step + 1]["text"],
                     get_survey_keyboard(step + 1))
             else:
@@ -764,13 +775,13 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
                 log_event(chat_id, "survey_completed")
                 biz_data = get_business_data(chat_id)
                 if not biz_data:
-                    await edit_message(chat_id, message_id,
+                    await send_callback_answer(callback_id,
                         "❌ Ошибка: данные бизнеса не найдены. Начни заново.",
                         get_main_menu_keyboard())
                     save_user_state(chat_id, STATE_MENU, {})
                     return
 
-                await edit_message(chat_id, message_id,
+                await send_callback_answer(callback_id,
                     "🔍 Запускаю диагностику... Это займёт до 60 секунд.",
                     None)
                 report_text = await call_deepseek_diagnostic(
@@ -778,11 +789,11 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
                 if report_text:
                     log_event(chat_id, "free_report_generated")
                     save_user_state(chat_id, STATE_MENU, {"generated_report": report_text, "report_title": biz_data["name"]})
-                    await send_message(chat_id,
+                    await send_callback_answer(callback_id,
                         "✅ Диагностика готова! Как тебе удобнее получить?",
                         get_format_choice_keyboard())
                 else:
-                    await send_message(chat_id,
+                    await send_callback_answer(callback_id,
                         "⚠️ Диагностика готова (по шаблону). Как удобнее получить?",
                         get_format_choice_keyboard())
         return
@@ -793,10 +804,10 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
         if report_text:
             max_len = 3800
             if len(report_text) > max_len:
-                await edit_message(chat_id, message_id, "✅ Твоя диагностика:\n\n" + report_text[:max_len], None)
-                await send_message(chat_id, report_text[max_len:max_len+max_len], None)
+                await send_callback_answer(callback_id, "✅ Твоя диагностика:\n\n" + report_text[:max_len], None)
+                await send_notification(chat_id, report_text[max_len:max_len+max_len])
             else:
-                await edit_message(chat_id, message_id, "✅ Твоя диагностика:\n\n" + report_text, None)
+                await send_callback_answer(callback_id, "✅ Твоя диагностика:\n\n" + report_text, None)
         await send_message(chat_id,
             "🔥 Ну как тебе?\n\n"
             "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
@@ -955,10 +966,10 @@ async def webhook(request: Request):
         elif "callback_query" in payload:
             cb = payload["callback_query"]
             chat_id = cb.get("message", {}).get("chat", {}).get("id")
-            message_id = cb.get("message", {}).get("id")
+            callback_id = cb.get("callback_id")
             data = cb.get("data")
             if chat_id and data:
-                await process_callback(str(chat_id), str(message_id), data)
+                await process_callback(str(chat_id), str(callback_id), data)
 
         return Response(status_code=200)
     except Exception as e:
