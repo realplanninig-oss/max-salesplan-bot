@@ -316,9 +316,14 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
     if keyboard:
-        payload["reply_markup"] = {
-            "inline_keyboard": keyboard
-        }
+        payload["attachments"] = [
+            {
+                "type": "inline_keyboard",
+                "payload": {
+                    "buttons": keyboard
+                }
+            }
+        ]
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
@@ -332,9 +337,14 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
     url = f"{MAX_API_URL}/answers?callback_id={callback_id}"
     payload = {"message": {"text": text}}
     if keyboard:
-        payload["message"]["reply_markup"] = {
-            "inline_keyboard": keyboard
-        }
+        payload["message"]["attachments"] = [
+            {
+                "type": "inline_keyboard",
+                "payload": {
+                    "buttons": keyboard
+                }
+            }
+        ]
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
@@ -444,12 +454,20 @@ async def check_yookassa_payment(payment_id: str):
                 return None
 
 def get_main_menu_keyboard():
-    return [[[{"text": "📊 Бесплатный аудит", "callback_data": CALLBACK_START_AUDIT}]]]
+    return [
+        [
+            {"text": "📊 Бесплатный аудит", "callback_data": CALLBACK_START_AUDIT}
+        ]
+    ]
 
 def get_after_diagnostic_keyboard():
     return [
-        [[{"text": "🔥 План продаж за 490 ₽", "callback_data": CALLBACK_MY_PREMIUM}]],
-        [[{"text": "👩‍💼 Бесплатная консультация", "callback_data": CALLBACK_BOOK_CALL}]]
+        [
+            {"text": "🔥 План продаж за 490 ₽", "callback_data": CALLBACK_MY_PREMIUM}
+        ],
+        [
+            {"text": "👩‍💼 Бесплатная консультация", "callback_data": CALLBACK_BOOK_CALL}
+        ]
     ]
 
 def get_survey_keyboard(question_index: int):
@@ -463,27 +481,49 @@ def get_survey_keyboard(question_index: int):
 
 def get_format_choice_keyboard():
     return [
-        [[{"text": "📝 В сообщении", "callback_data": CALLBACK_SEND_AS_TEXT}]],
-        [[{"text": "📄 В файле .txt", "callback_data": CALLBACK_SEND_AS_FILE}]]
+        [
+            {"text": "📝 В сообщении", "callback_data": CALLBACK_SEND_AS_TEXT}
+        ],
+        [
+            {"text": "📄 В файле .txt", "callback_data": CALLBACK_SEND_AS_FILE}
+        ]
     ]
 
 def get_consultation_keyboard():
-    return [[[{"text": "📝 Оставить заявку", "callback_data": CALLBACK_BOOK_CALL}]]]
+    return [
+        [
+            {"text": "📝 Оставить заявку", "callback_data": CALLBACK_BOOK_CALL}
+        ]
+    ]
 
 def get_post_download_keyboard():
     return [
-        [[{"text": "👩‍💼 Разобрать план (30 мин)", "callback_data": CALLBACK_BOOK_CALL}]],
-        [[{"text": "📚 Получить мини-курс", "url": "https://t.me/zapuskintelega_bot"}]]
+        [
+            {"text": "👩‍💼 Разобрать план (30 мин)", "callback_data": CALLBACK_BOOK_CALL}
+        ],
+        [
+            {"text": "📚 Получить мини-курс", "url": "https://t.me/zapuskintelega_bot"}
+        ]
     ]
 
 def get_channel_subscribe_keyboard():
-    return [[[{"text": "📢 Подписаться на канал", "url": "https://max.ru/id781407988795_biz"}]]]
+    return [
+        [
+            {"text": "📢 Подписаться на канал", "url": "https://max.ru/id781407988795_biz"}
+        ]
+    ]
 
 def get_payment_keyboard(confirmation_url: str):
     return [
-        [{"text": f"💳 Оплатить 490 ₽", "url": confirmation_url}],
-        [{"text": "✅ Я оплатил(а)", "callback_data": CALLBACK_I_PAID}],
-        [{"text": "❓ Помощь", "callback_data": CALLBACK_HELP}]
+        [
+            {"text": "💳 Оплатить 490 ₽", "url": confirmation_url}
+        ],
+        [
+            {"text": "✅ Я оплатил(а)", "callback_data": CALLBACK_I_PAID}
+        ],
+        [
+            {"text": "❓ Помощь", "callback_data": CALLBACK_HELP}
+        ]
     ]
 
 async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
