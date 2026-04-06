@@ -840,40 +840,40 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         save_user_state(chat_id, STATE_MENU, {})
         return
 
-async def process_message(chat_id: str, text: str):
-    logger.info(f"PROCESS_MESSAGE called: chat_id={chat_id}, text={text}")
-    state, data = get_user_state(chat_id)
-    log_event(chat_id, f"message: {text[:50]}")
+async def process_message(user_id: str, text: str):
+    logger.info(f"PROCESS_MESSAGE called: user_id={user_id}, text={text}")
+    state, data = get_user_state(str(user_id))
+    log_event(str(user_id), f"message: {text[:50]}")
 
     if state == STATE_MENU:
         if text == "/start":
-            await send_message(chat_id,
+            await send_message(str(user_id),
                 "Привет! Я Вероника, продюсер экспертов.\n\n"
                 "Контент вроде делаешь, подписчики есть, а денег нет? Знакомо.\n\n"
                 "Давай сделаем бесплатный аудит твоего канала — 2 минуты, и узнаешь, что теряешь.",
                 get_main_menu_keyboard())
-            save_user_state(chat_id, STATE_MENU, {})
+            save_user_state(str(user_id), STATE_MENU, {})
         else:
-            await send_message(chat_id, "Используй кнопки меню или напиши /start")
+            await send_message(str(user_id), "Используй кнопки меню или напиши /start")
         return
 
     if state == STATE_AWAITING_BUSINESS_NAME:
         if len(text) > 100:
-            await send_message(chat_id, "Слишком длинное название. Напиши покороче (до 100 символов):")
+            await send_message(str(user_id), "Слишком длинное название. Напиши покороче (до 100 символов):")
             return
-        save_user_state(chat_id, STATE_AWAITING_BUSINESS_DESCRIPTION, {"business_name": text})
-        await send_message(chat_id, "Ок, записала! Теперь напиши краткое описание бизнеса — что ты делаешь, кому помогаешь:")
+        save_user_state(str(user_id), STATE_AWAITING_BUSINESS_DESCRIPTION, {"business_name": text})
+        await send_message(str(user_id), "Ок, записала! Теперь напиши краткое описание бизнеса — что ты делаешь, кому помогаешь:")
         return
 
     if state == STATE_AWAITING_BUSINESS_DESCRIPTION:
         if len(text) > 500:
-            await send_message(chat_id, "Описание слишком длинное. Напиши покороче (до 500 символов):")
+            await send_message(str(user_id), "Описание слишком длинное. Напиши покороче (до 500 символов):")
             return
         business_name = data.get("business_name")
-        save_business_data(chat_id, business_name, text)
-        log_event(chat_id, "business_data_collected")
-        save_user_state(chat_id, STATE_SURVEY, {"answers": {}, "survey_step": 0})
-        await send_message(chat_id, SURVEY_QUESTIONS[0]["text"], get_survey_keyboard(0))
+        save_business_data(str(user_id), business_name, text)
+        log_event(str(user_id), "business_data_collected")
+        save_user_state(str(user_id), STATE_SURVEY, {"answers": {}, "survey_step": 0})
+        await send_message(str(user_id), SURVEY_QUESTIONS[0]["text"], get_survey_keyboard(0))
         return
 
     if state == STATE_SURVEY:
@@ -884,32 +884,32 @@ async def process_message(chat_id: str, text: str):
             answers[key] = text
             data["answers"] = answers
             data["survey_step"] = step + 1
-            save_user_state(chat_id, STATE_SURVEY, data)
+            save_user_state(str(user_id), STATE_SURVEY, data)
             
             if step + 1 < len(SURVEY_QUESTIONS):
-                await send_message(chat_id, SURVEY_QUESTIONS[step + 1]["text"], get_survey_keyboard(step + 1))
+                await send_message(str(user_id), SURVEY_QUESTIONS[step + 1]["text"], get_survey_keyboard(step + 1))
             else:
-                save_form(chat_id, answers)
-                log_event(chat_id, "survey_completed")
-                biz_data = get_business_data(chat_id)
+                save_form(str(user_id), answers)
+                log_event(str(user_id), "survey_completed")
+                biz_data = get_business_data(str(user_id))
                 if not biz_data:
-                    await send_message(chat_id, "❌ Ошибка: данные бизнеса не найдены. Начни заново.", get_main_menu_keyboard())
-                    save_user_state(chat_id, STATE_MENU, {})
+                    await send_message(str(user_id), "❌ Ошибка: данные бизнеса не найдены. Начни заново.", get_main_menu_keyboard())
+                    save_user_state(str(user_id), STATE_MENU, {})
                     return
 
-                await send_message(chat_id, "🔍 Запускаю диагностику... Это займёт до 60 секунд.", None)
+                await send_message(str(user_id), "🔍 Запускаю диагностику... Это займёт до 60 секунд.", None)
                 report_text = await call_deepseek_diagnostic(biz_data["name"], biz_data["description"], answers)
                 if report_text:
-                    log_event(chat_id, "free_report_generated")
-                    save_user_state(chat_id, STATE_MENU, {"generated_report": report_text, "report_title": biz_data["name"]})
-                    await send_message(chat_id, "✅ Диагностика готова! Как тебе удобнее получить?", get_format_choice_keyboard())
+                    log_event(str(user_id), "free_report_generated")
+                    save_user_state(str(user_id), STATE_MENU, {"generated_report": report_text, "report_title": biz_data["name"]})
+                    await send_message(str(user_id), "✅ Диагностика готова! Как тебе удобнее получить?", get_format_choice_keyboard())
                 else:
-                    await send_message(chat_id, "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", get_format_choice_keyboard())
+                    await send_message(str(user_id), "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", get_format_choice_keyboard())
         return
 
     if state == STATE_WAITING_CALL:
-        biz_data = get_business_data(chat_id)
-        form_data = get_form(chat_id)
+        biz_data = get_business_data(str(user_id))
+        form_data = get_form(str(user_id))
         channel_info = f"Название: {biz_data['name']}\nОписание: {biz_data['description'][:200]}..." if biz_data else "Нет данных"
         survey_info = "Нет данных"
         if form_data:
@@ -924,21 +924,21 @@ async def process_message(chat_id: str, text: str):
 • Цель: {q4_map.get(form_data.get('q4'), 'не указано')}
 • Автоворонка: {q5_map.get(form_data.get('q5'), 'не указано')}"""
         await send_message(ADMIN_CHAT_ID,
-            f"📞 НОВАЯ ЗАЯВКА НА РАЗБОР\n\nПользователь: {chat_id}\nСообщение: {text}\n\nДанные бизнеса:\n{channel_info}\n\nАнкета:\n{survey_info}\n\n⏰ {format_moscow_time()}")
-        await send_message(chat_id,
+            f"📞 НОВАЯ ЗАЯВКА НА РАЗБОР\n\nПользователь: {user_id}\nСообщение: {text}\n\nДанные бизнеса:\n{channel_info}\n\nАнкета:\n{survey_info}\n\n⏰ {format_moscow_time()}")
+        await send_message(str(user_id),
             "✅ Заявка принята! Я получила твои данные.\n\n"
             "А пока ждёшь ответа, загляни в мой канал — там я делюсь тем, что реально работает:\n"
             "🔥 Кейсы с цифрами\n"
             "🔍 Разборы ошибок\n"
             "📝 Скрипты фраз, которые продают\n\n"
             "После подписки зайди в закреп — там мини-курс «3 шага к первой продаже» в подарок 🎁")
-        await send_message(chat_id,
+        await send_message(str(user_id),
             "👇 Жми кнопку, подписывайся и забирай мини-курс",
             get_channel_subscribe_keyboard())
-        save_user_state(chat_id, STATE_MENU, {})
+        save_user_state(str(user_id), STATE_MENU, {})
         return
 
-    await send_message(chat_id, "Используй кнопки меню или напиши /start")
+    await send_message(str(user_id), "Используй кнопки меню или напиши /start")
 
 from contextlib import asynccontextmanager
 
@@ -958,19 +958,19 @@ async def webhook(request: Request):
 
         if "message" in payload:
             msg = payload["message"]
-            chat_id = msg.get("recipient", {}).get("chat_id")
+            user_id = msg.get("sender", {}).get("user_id")
             body = msg.get("body", {})
             text = body.get("text")
-            if chat_id and text:
-                await process_message(str(chat_id), text)
+            if user_id and text:
+                await process_message(str(user_id), text)
 
         elif "callback_query" in payload:
             cb = payload["callback_query"]
-            chat_id = cb.get("message", {}).get("chat", {}).get("id")
+            user_id = cb.get("user", {}).get("id")
             callback_id = cb.get("callback_id")
             data = cb.get("data")
-            if chat_id and data:
-                await process_callback(str(chat_id), str(callback_id), data)
+            if user_id and data:
+                await process_callback(str(user_id), str(callback_id), data)
 
         return Response(status_code=200)
     except Exception as e:
