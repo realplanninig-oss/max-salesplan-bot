@@ -827,8 +827,21 @@ async def process_callback(chat_id: str, message_id: str, callback_data: str):
         return
 
 async def process_message(chat_id: str, text: str):
+    logger.info(f"PROCESS_MESSAGE called: chat_id={chat_id}, text={text}")
     state, data = get_user_state(chat_id)
     log_event(chat_id, f"message: {text[:50]}")
+
+    if state == STATE_MENU:
+        if text == "/start":
+            await send_message(chat_id,
+                "Привет! Я Вероника, продюсер экспертов.\n\n"
+                "Контент вроде делаешь, подписчики есть, а денег нет? Знакомо.\n\n"
+                "Давай сделаем бесплатный аудит твоего канала — 2 минуты, и узнаешь, что теряешь.",
+                get_main_menu_keyboard())
+            save_user_state(chat_id, STATE_MENU, {})
+        else:
+            await send_message(chat_id, "Используй кнопки меню или напиши /start")
+        return
 
     if state == STATE_AWAITING_BUSINESS_NAME:
         if len(text) > 100:
@@ -847,6 +860,38 @@ async def process_message(chat_id: str, text: str):
         log_event(chat_id, "business_data_collected")
         save_user_state(chat_id, STATE_SURVEY, {"answers": {}, "survey_step": 0})
         await send_message(chat_id, SURVEY_QUESTIONS[0]["text"], get_survey_keyboard(0))
+        return
+
+    if state == STATE_SURVEY:
+        step = data.get("survey_step", 0)
+        if step < len(SURVEY_QUESTIONS):
+            # Сохраняем ответ
+            key = SURVEY_QUESTIONS[step]["key"]
+            answers = data.get("answers", {})
+            answers[key] = text
+            data["answers"] = answers
+            data["survey_step"] = step + 1
+            save_user_state(chat_id, STATE_SURVEY, data)
+            
+            if step + 1 < len(SURVEY_QUESTIONS):
+                await send_message(chat_id, SURVEY_QUESTIONS[step + 1]["text"], get_survey_keyboard(step + 1))
+            else:
+                save_form(chat_id, answers)
+                log_event(chat_id, "survey_completed")
+                biz_data = get_business_data(chat_id)
+                if not biz_data:
+                    await send_message(chat_id, "❌ Ошибка: данные бизнеса не найдены. Начни заново.", get_main_menu_keyboard())
+                    save_user_state(chat_id, STATE_MENU, {})
+                    return
+
+                await send_message(chat_id, "🔍 Запускаю диагностику... Это займёт до 60 секунд.", None)
+                report_text = await call_deepseek_diagnostic(biz_data["name"], biz_data["description"], answers)
+                if report_text:
+                    log_event(chat_id, "free_report_generated")
+                    save_user_state(chat_id, STATE_MENU, {"generated_report": report_text, "report_title": biz_data["name"]})
+                    await send_message(chat_id, "✅ Диагностика готова! Как тебе удобнее получить?", get_format_choice_keyboard())
+                else:
+                    await send_message(chat_id, "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", get_format_choice_keyboard())
         return
 
     if state == STATE_WAITING_CALL:
@@ -900,8 +945,9 @@ async def webhook(request: Request):
 
         if "message" in payload:
             msg = payload["message"]
-            chat_id = msg.get("chat", {}).get("id")
-            text = msg.get("text")
+            chat_id = msg.get("recipient", {}).get("chat_id")
+            body = msg.get("body", {})
+            text = body.get("text")
             if chat_id and text:
                 await process_message(str(chat_id), text)
 
