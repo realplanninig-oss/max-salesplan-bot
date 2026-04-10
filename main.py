@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (логика Telegram-подобного бота на платформе MAX)
+# File: main.py — бот Salesplan для MAX (с правильным форматом callback-кнопок)
 
 import asyncio
 import logging
@@ -29,7 +29,6 @@ YKASSA_TEST_MODE = os.getenv("YKASSA_TEST_MODE", "true").lower() == "true"
 
 MAX_API_URL = "https://platform-api.max.ru"
 YKASSA_API_URL = "https://api.yookassa.ru/v3"
-PAYMENT_URL = "https://yookassa.ru/my/i/adO_-KVsYKuY/l"
 
 if not MAX_BOT_TOKEN:
     raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in .env")
@@ -51,12 +50,14 @@ DB_PATH = "salesplan.db"
 REPORTS_DIR = Path("./reports")
 REPORTS_DIR.mkdir(exist_ok=True)
 
+# === СОСТОЯНИЯ ===
 STATE_MENU = "menu"
 STATE_AWAITING_BUSINESS_NAME = "awaiting_business_name"
 STATE_AWAITING_BUSINESS_DESCRIPTION = "awaiting_business_description"
 STATE_SURVEY = "survey"
 STATE_WAITING_CALL = "waiting_call"
 
+# === CALLBACK DATA ===
 CALLBACK_START_AUDIT = "start_audit"
 CALLBACK_MY_PREMIUM = "my_premium"
 CALLBACK_I_PAID = "i_paid"
@@ -66,6 +67,7 @@ CALLBACK_SEND_AS_TEXT = "send_as_text"
 CALLBACK_SEND_AS_FILE = "send_as_file"
 CALLBACK_HELP = "help"
 
+# === ОПРОСНИК ===
 Q1_SERVICE = "q1_service"
 Q1_INFO = "q1_info"
 Q1_CONSULT = "q1_consult"
@@ -118,14 +120,7 @@ SURVEY_QUESTIONS = [
     ]},
 ]
 
-def get_moscow_time():
-    return datetime.utcnow() + timedelta(hours=3)
-
-def format_moscow_time(dt=None):
-    if dt is None:
-        dt = get_moscow_time()
-    return dt.strftime('%Y-%m-%d %H:%M:%S')
-
+# === БАЗА ДАННЫХ ===
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -308,11 +303,20 @@ def clear_pending_payment(user_id: str):
     conn.commit()
     conn.close()
 
+def get_moscow_time():
+    return datetime.utcnow() + timedelta(hours=3)
+
+def format_moscow_time(dt=None):
+    if dt is None:
+        dt = get_moscow_time()
+    return dt.strftime('%Y-%m-%d %H:%M:%S')
+
 def log_event(user_id: str, event_type: str, event_data: str = None):
     logger.info(f"Event: {event_type} | User: {user_id} | Data: {event_data}")
 
+# === ОТПРАВКА СООБЩЕНИЙ (ПРАВИЛЬНЫЙ ФОРМАТ) ===
 async def send_message(chat_id: str, text: str, keyboard: list = None):
-    """Отправка сообщения с кнопками (правильный формат)"""
+    """Отправка сообщения с кнопками (правильный формат из теста curl)"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
     if keyboard:
@@ -333,7 +337,7 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
             return await resp.json()
 
 async def send_callback_answer(callback_id: str, text: str, keyboard: list = None):
-    """Отправка ответа на callback (используется для обновления сообщения)"""
+    """Ответ на callback (обновление сообщения после нажатия кнопки)"""
     url = f"{MAX_API_URL}/answers?callback_id={callback_id}"
     payload = {"message": {"text": text}}
     if keyboard:
@@ -354,7 +358,7 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
             return await resp.json()
 
 async def send_notification(chat_id: str, text: str):
-    """Отправка одноразового уведомления"""
+    """Одноразовое уведомление"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
@@ -365,6 +369,7 @@ async def send_notification(chat_id: str, text: str):
                 logger.error(f"send_notification failed: {resp.status} - {error_text}")
             return await resp.json()
 
+# === ФАЙЛЫ ===
 async def upload_file_to_max(file_path: str, file_type: str = "file"):
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -413,6 +418,7 @@ async def send_file_message(chat_id: str, text: str, file_path: str, file_type: 
                 await send_message(chat_id, f"{text}\n\n❌ Не удалось отправить файл")
             return await resp.json()
 
+# === ПЛАТЕЖИ ===
 async def create_yookassa_payment(amount: int, description: str, user_id: str):
     payment_id = f"salesplan_{user_id}_{uuid.uuid4().hex[:8]}"
     payload = {
@@ -453,7 +459,9 @@ async def check_yookassa_payment(payment_id: str):
                 logger.error(f"Failed to check payment: {await resp.text()}")
                 return None
 
+# === КЛАВИАТУРЫ (ПРАВИЛЬНЫЙ ФОРМАТ) ===
 def get_main_menu_keyboard():
+    """Главное меню — формат из успешного теста curl"""
     return [
         [
             {
@@ -578,6 +586,7 @@ def get_channel_subscribe_keyboard():
         ]
     ]
 
+# === DEEPSEEK API ===
 async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
     q1_map = {Q1_SERVICE: "Услугу", Q1_INFO: "Инфопродукт", Q1_CONSULT: "Консультацию", Q1_NONE: "Пока не продаю"}
     q2_map = {Q2_LT5: "до 5k", Q2_5_20: "5k-20k", Q2_20_50: "20k-50k", Q2_50P: ">50k"}
@@ -704,6 +713,7 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
         logger.error(f"Premium report error: {e}")
         update_report_status(report_id, 'failed')
 
+# === ОБРАБОТЧИКИ ===
 async def process_callback(chat_id: str, callback_id: str, callback_data: str):
     state, data = get_user_state(chat_id)
     log_event(chat_id, f"callback_{callback_data}")
@@ -744,7 +754,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         else:
             await send_callback_answer(callback_id,
                 "❌ Ошибка при создании платежа. Попробуй позже или нажми «Помощь».",
-                [[[{"text": "❓ Помощь", "callback_data": CALLBACK_HELP}]]])
+                get_main_menu_keyboard())
             return
         
         report_id = save_report_request(chat_id)
@@ -772,20 +782,20 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                     await send_callback_answer(callback_id,
                         "✅ Оплата прошла, спасибо!\n\n"
                         "План ещё готовится — обычно 5-10 минут. Я пришлю уведомление, как только всё будет готово.",
-                        [[[{"text": "❓ Помощь", "callback_data": CALLBACK_HELP}]]])
+                        get_main_menu_keyboard())
             elif status == "pending":
                 await send_callback_answer(callback_id,
                     "⏳ Платёж ещё не подтверждён. Подожди немного и нажми «Я оплатил(а)» снова.\n\n"
                     "Если деньги уже списались — нажми «Помощь», я проверю вручную.",
-                    [[[{"text": "❓ Помощь", "callback_data": CALLBACK_HELP}]]])
+                    get_main_menu_keyboard())
             else:
                 await send_callback_answer(callback_id,
                     "❌ Платёж не найден или отменён. Попробуй оплатить снова.",
-                    [[[{"text": "💳 Оплатить 490 ₽", "callback_data": CALLBACK_MY_PREMIUM}]]])
+                    get_main_menu_keyboard())
         else:
             await send_callback_answer(callback_id,
                 "❌ Не могу найти информацию о платеже. Попробуй оплатить снова.",
-                [[[{"text": "💳 Оплатить 490 ₽", "callback_data": CALLBACK_MY_PREMIUM}]]])
+                get_main_menu_keyboard())
         return
 
     if callback_data == CALLBACK_DOWNLOAD_REPORT:
@@ -815,7 +825,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         else:
             await send_callback_answer(callback_id,
                 "⏳ План ещё готовится. Обычно 5-10 минут.\n\nЕсли прошло больше — нажми кнопку помощи 👇",
-                [[[{"text": "❓ Помощь", "callback_data": CALLBACK_HELP}]]])
+                get_main_menu_keyboard())
         return
 
     if callback_data == CALLBACK_HELP:
@@ -1035,6 +1045,7 @@ async def process_message(user_id: str, text: str):
 
     await send_message(str(user_id), "Используй кнопки меню или напиши /start")
 
+# === ЗАПУСК ===
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -1076,7 +1087,7 @@ async def webhook(request: Request):
 
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot is running", "version": "2.0"}
+    return {"status": "Salesplan bot is running", "version": "3.0"}
 
 if __name__ == "__main__":
     import uvicorn
