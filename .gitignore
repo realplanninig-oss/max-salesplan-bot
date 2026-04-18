@@ -1,0 +1,60 @@
+# === СЕКРЕТЫ И КЛЮЧИ (САМОЕ ВАЖНОЕ) ===
+.env
+.env.*
+*.key
+*.pem
+*.crt
+secrets/
+credentials/
+
+# === ЛОГИ (могут содержать данные пользователей) ===
+logs/
+*.log
+*.log.*
+reports/
+
+# === БАЗЫ ДАННЫХ ===
+*.db
+*.sqlite
+*.sqlite3
+salesplan.db
+
+# === PYTHON ===
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+env/
+.env/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.classpath
+.settings/
+
+# === DOCKER ===
+docker-compose.override.yml
+.dockerignore
+
+# === ФАЙЛЫ ПРОЕКТА (ОПЦИОНАЛЬНО) ===
+reports/
+*.pid
+*.gz
+*.zip
