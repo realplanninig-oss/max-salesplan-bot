@@ -17,7 +17,25 @@ from fastapi import FastAPI, Request, Response, HTTPException
 import aiohttp
 import aiofiles
 
+# Загружаем переменные из .env (если файл существует)
 load_dotenv()
+
+# === ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
+print("=" * 60)
+print("ENVIRONMENT VARIABLES CHECK")
+print("=" * 60)
+print(f"MAX_BOT_TOKEN: {'✓ SET' if os.getenv('MAX_BOT_TOKEN') else '✗ MISSING'}")
+if os.getenv('MAX_BOT_TOKEN'):
+    token = os.getenv('MAX_BOT_TOKEN')
+    print(f"  Length: {len(token)} characters")
+    print(f"  First 10 chars: {token[:10]}...")
+print(f"ADMIN_CHAT_ID: {os.getenv('ADMIN_CHAT_ID', '✗ MISSING')}")
+print(f"DEEPSEEK_API_KEY: {'✓ SET' if os.getenv('DEEPSEEK_API_KEY') else '✗ MISSING'}")
+print(f"YKASSA_SHOP_ID: {os.getenv('YKASSA_SHOP_ID', '✗ MISSING')}")
+print(f"YKASSA_SECRET_KEY: {'✓ SET' if os.getenv('YKASSA_SECRET_KEY') else '✗ MISSING'}")
+print(f"YKASSA_TEST_MODE: {os.getenv('YKASSA_TEST_MODE', '✗ MISSING')}")
+print(f"PORT: {os.getenv('PORT', '8000')}")
+print("=" * 60)
 
 # === КОНФИГУРАЦИЯ ===
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
@@ -27,11 +45,16 @@ YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "test")
 YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "test")
 YKASSA_TEST_MODE = os.getenv("YKASSA_TEST_MODE", "true").lower() == "true"
 
+# Проверка наличия обязательных переменных
+if not MAX_BOT_TOKEN:
+    logging.error("❌ MAX_BOT_TOKEN not found in environment!")
+    # Для теста - можно захардкодить, но потом убрать!
+    # MAX_BOT_TOKEN = "f9LHodD0cOIgRoB98OIQNqwfz_Tyjfn0rYl9REwshxQ4Q7-6jwmd_feZ4h98RVjFnUmlKyRYs3Da96qcJgWV"
+    # print("⚠️ WARNING: Using hardcoded token for testing!")
+    raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in environment variables")
+
 MAX_API_URL = "https://platform-api.max.ru"
 YKASSA_API_URL = "https://api.yookassa.ru/v3"
-
-if not MAX_BOT_TOKEN:
-    raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in .env")
 
 LOGS_DIR = Path("./logs")
 LOGS_DIR.mkdir(exist_ok=True)
@@ -45,6 +68,16 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Логируем статус переменных
+logger.info("=" * 50)
+logger.info("APPLICATION STARTING WITH CONFIGURATION:")
+logger.info(f"MAX_BOT_TOKEN: {'✓ SET' if MAX_BOT_TOKEN else '✗ MISSING'}")
+logger.info(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID if ADMIN_CHAT_ID else '✗ MISSING'}")
+logger.info(f"DEEPSEEK_API_KEY: {'✓ SET' if DEEPSEEK_API_KEY else '✗ MISSING'}")
+logger.info(f"YKASSA_SHOP_ID: {YKASSA_SHOP_ID if YKASSA_SHOP_ID != 'test' else 'test mode'}")
+logger.info(f"YKASSA_SECRET_KEY: {'✓ SET' if YKASSA_SECRET_KEY != 'test' else 'test mode'}")
+logger.info("=" * 50)
 
 DB_PATH = "salesplan.db"
 REPORTS_DIR = Path("./reports")
@@ -314,9 +347,9 @@ def format_moscow_time(dt=None):
 def log_event(user_id: str, event_type: str, event_data: str = None):
     logger.info(f"Event: {event_type} | User: {user_id} | Data: {event_data}")
 
-# === ОТПРАВКА СООБЩЕНИЙ (ПРАВИЛЬНЫЙ ФОРМАТ) ===
+# === ОТПРАВКА СООБЩЕНИЙ ===
 async def send_message(chat_id: str, text: str, keyboard: list = None):
-    """Отправка сообщения с кнопками (правильный формат из теста curl)"""
+    """Отправка сообщения с кнопками"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
     if keyboard:
@@ -459,9 +492,8 @@ async def check_yookassa_payment(payment_id: str):
                 logger.error(f"Failed to check payment: {await resp.text()}")
                 return None
 
-# === КЛАВИАТУРЫ (ПРАВИЛЬНЫЙ ФОРМАТ) ===
+# === КЛАВИАТУРЫ ===
 def get_main_menu_keyboard():
-    """Главное меню — формат из успешного теста curl"""
     return [
         [
             {
@@ -1051,10 +1083,32 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Salesplan bot started")
+    logger.info(f"Bot token configured: {'✓' if MAX_BOT_TOKEN else '✗'}")
     yield
     logger.info("Salesplan bot stopped")
 
 app = FastAPI(title="Salesplan Bot for MAX", lifespan=lifespan)
+
+# === HEALTH CHECK ENDPOINT ===
+@app.get("/health")
+async def health():
+    """Проверка состояния приложения и переменных окружения"""
+    return {
+        "status": "alive",
+        "timestamp": datetime.now().isoformat(),
+        "configuration": {
+            "MAX_BOT_TOKEN": "configured" if MAX_BOT_TOKEN else "missing",
+            "ADMIN_CHAT_ID": "configured" if ADMIN_CHAT_ID else "missing",
+            "DEEPSEEK_API_KEY": "configured" if DEEPSEEK_API_KEY else "missing",
+            "YKASSA_SHOP_ID": "configured" if YKASSA_SHOP_ID != "test" else "test_mode",
+            "YKASSA_SECRET_KEY": "configured" if YKASSA_SECRET_KEY != "test" else "test_mode",
+            "YKASSA_TEST_MODE": YKASSA_TEST_MODE
+        }
+    }
+
+@app.get("/")
+async def root():
+    return {"status": "Salesplan bot is running", "version": "3.0"}
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -1074,7 +1128,6 @@ async def webhook(request: Request):
             cb = payload["callback_query"]
             user_id = cb.get("user", {}).get("id")
             callback_id = cb.get("callback_id")
-            # ВАЖНО: читаем payload, а не data
             data = cb.get("payload")
             logger.info(f"CALLBACK RECEIVED: user_id={user_id}, callback_id={callback_id}, payload={data}")
             if user_id and data:
@@ -1084,10 +1137,6 @@ async def webhook(request: Request):
     except Exception as e:
         logger.error(f"Webhook error: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/")
-async def root():
-    return {"status": "Salesplan bot is running", "version": "3.0"}
 
 if __name__ == "__main__":
     import uvicorn
