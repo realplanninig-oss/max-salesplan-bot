@@ -1,16 +1,14 @@
-version: '3.8'
-
 services:
   max-bot:
     build: .
     ports:
       - "8000:8000"
     environment:
-      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN}
-      ADMIN_CHAT_ID: ${ADMIN_CHAT_ID}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
-      YKASSA_SHOP_ID: ${YKASSA_SHOP_ID}
-      YKASSA_SECRET_KEY: ${YKASSA_SECRET_KEY}
-      YKASSA_TEST_MODE: ${YKASSA_TEST_MODE}
-      PORT: ${PORT}
+      - MAX_BOT_TOKEN
+      - ADMIN_CHAT_ID
+      - DEEPSEEK_API_KEY
+      - YKASSA_SHOP_ID
+      - YKASSA_SECRET_KEY
+      - YKASSA_TEST_MODE
+      - PORT
     restart: always
