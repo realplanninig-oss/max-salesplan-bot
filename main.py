@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (с правильным форматом callback-кнопок)
+# File: main.py — бот Salesplan для MAX (исправленный формат кнопок)
 
 import asyncio
 import logging
@@ -92,6 +92,7 @@ CALLBACK_DOWNLOAD_REPORT = "download_report"
 CALLBACK_SEND_AS_TEXT = "send_as_text"
 CALLBACK_SEND_AS_FILE = "send_as_file"
 CALLBACK_HELP = "help"
+CALLBACK_TEST = "test_button"
 
 # === ОПРОСНИК ===
 Q1_SERVICE = "q1_service"
@@ -494,16 +495,24 @@ async def check_yookassa_payment(payment_id: str):
                 logger.error(f"Failed to check payment: {await resp.text()}")
                 return None
 
-# === КЛАВИАТУРЫ ===
+# === КЛАВИАТУРЫ (ИСПРАВЛЕННЫЙ ФОРМАТ ПО ДОКУМЕНТАЦИИ MAX) ===
 def get_main_menu_keyboard():
-    """Главное меню"""
+    """Главное меню - правильный формат MAX API"""
     return [
         [
             {
-                "type": "callback",
                 "text": "📊 Бесплатный аудит",
-                "payload": CALLBACK_START_AUDIT,
-                "intent": "default"
+                "callback": {
+                    "payload": CALLBACK_START_AUDIT
+                }
+            }
+        ],
+        [
+            {
+                "text": "🧪 Тестовая кнопка",
+                "callback": {
+                    "payload": CALLBACK_TEST
+                }
             }
         ]
     ]
@@ -512,18 +521,18 @@ def get_after_diagnostic_keyboard():
     return [
         [
             {
-                "type": "callback",
                 "text": "🔥 План продаж за 490 ₽",
-                "payload": CALLBACK_MY_PREMIUM,
-                "intent": "default"
+                "callback": {
+                    "payload": CALLBACK_MY_PREMIUM
+                }
             }
         ],
         [
             {
-                "type": "callback",
                 "text": "👩‍💼 Бесплатная консультация",
-                "payload": CALLBACK_BOOK_CALL,
-                "intent": "default"
+                "callback": {
+                    "payload": CALLBACK_BOOK_CALL
+                }
             }
         ]
     ]
@@ -536,10 +545,10 @@ def get_survey_keyboard(question_index: int):
     for payload_val, label in q["options"]:
         keyboard.append([
             {
-                "type": "callback",
                 "text": label,
-                "payload": payload_val,
-                "intent": "default"
+                "callback": {
+                    "payload": payload_val
+                }
             }
         ])
     return keyboard
@@ -548,18 +557,18 @@ def get_format_choice_keyboard():
     return [
         [
             {
-                "type": "callback",
                 "text": "📝 В сообщении",
-                "payload": CALLBACK_SEND_AS_TEXT,
-                "intent": "default"
+                "callback": {
+                    "payload": CALLBACK_SEND_AS_TEXT
+                }
             }
         ],
         [
             {
-                "type": "callback",
                 "text": "📄 В файле .txt",
-                "payload": CALLBACK_SEND_AS_FILE,
-                "intent": "default"
+                "callback": {
+                    "payload": CALLBACK_SEND_AS_FILE
+                }
             }
         ]
     ]
@@ -575,18 +584,18 @@ def get_payment_keyboard(confirmation_url: str):
         ],
         [
             {
-                "type": "callback",
                 "text": "✅ Я оплатил(а)",
-                "payload": CALLBACK_I_PAID,
-                "intent": "default"
+                "callback": {
+                    "payload": CALLBACK_I_PAID
+                }
             }
         ],
         [
             {
-                "type": "callback",
                 "text": "❓ Помощь",
-                "payload": CALLBACK_HELP,
-                "intent": "default"
+                "callback": {
+                    "payload": CALLBACK_HELP
+                }
             }
         ]
     ]
@@ -595,10 +604,10 @@ def get_post_download_keyboard():
     return [
         [
             {
-                "type": "callback",
                 "text": "👩‍💼 Разобрать план (30 мин)",
-                "payload": CALLBACK_BOOK_CALL,
-                "intent": "default"
+                "callback": {
+                    "payload": CALLBACK_BOOK_CALL
+                }
             }
         ],
         [
@@ -767,6 +776,12 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
     logger.info(f"callback_id: {callback_id}")
     logger.info(f"callback_data: {callback_data} (type: {type(callback_data)})")
     
+    # Для тестовой кнопки - просто подтверждение
+    if callback_data == CALLBACK_TEST:
+        logger.info(f"✅ TEST BUTTON PRESSED!")
+        await send_callback_answer(callback_id, "✅ Тестовая кнопка работает! 🎉", None)
+        return
+    
     state, data = get_user_state(chat_id)
     log_event(chat_id, f"callback_{callback_data}")
 
@@ -830,10 +845,10 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 if report_status and report_status['status'] == 'ready':
                     download_keyboard = [[
                         {
-                            "type": "callback",
                             "text": "📥 Скачать план",
-                            "payload": CALLBACK_DOWNLOAD_REPORT,
-                            "intent": "default"
+                            "callback": {
+                                "payload": CALLBACK_DOWNLOAD_REPORT
+                            }
                         }
                     ]]
                     await send_callback_answer(callback_id,
@@ -1029,7 +1044,8 @@ async def process_message(user_id: str, text: str):
             await send_message(str(user_id),
                 "Привет! Я Вероника, продюсер экспертов.\n\n"
                 "Контент вроде делаешь, подписчики есть, а денег нет? Знакомо.\n\n"
-                "Давай сделаем бесплатный аудит твоего канала — 2 минуты, и узнаешь, что теряешь.",
+                "Давай сделаем бесплатный аудит твоего канала — 2 минуты, и узнаешь, что теряешь.\n\n"
+                "👇 Нажми на кнопку ниже:",
                 get_main_menu_keyboard())
             save_user_state(str(user_id), STATE_MENU, {})
         else:
@@ -1156,7 +1172,7 @@ async def root():
 async def webhook(request: Request):
     try:
         payload = await request.json()
-        logger.info(f"FULL PAYLOAD: {json.dumps(payload, ensure_ascii=False)[:500]}")
+        logger.info(f"=== FULL WEBHOOK PAYLOAD ===\n{json.dumps(payload, ensure_ascii=False, indent=2)}")
 
         if "message" in payload:
             msg = payload["message"]
@@ -1170,11 +1186,16 @@ async def webhook(request: Request):
             cb = payload["callback_query"]
             user_id = cb.get("user", {}).get("id")
             callback_id = cb.get("callback_id")
-            # Используем поле "payload" (как в клавиатуре)
-            data = cb.get("payload")
-            logger.info(f"CALLBACK RECEIVED: user_id={user_id}, callback_id={callback_id}, payload={data}")
+            # Правильный путь: callback.payload (по документации MAX)
+            data = cb.get("callback", {}).get("payload")
+            logger.info(f"=== CALLBACK RECEIVED ===")
+            logger.info(f"user_id: {user_id}")
+            logger.info(f"callback_id: {callback_id}")
+            logger.info(f"payload: {data}")
             if user_id and data:
                 await process_callback(str(user_id), str(callback_id), data)
+            else:
+                logger.warning(f"Callback received but no payload found! Full callback: {cb}")
 
         return Response(status_code=200)
     except Exception as e:
