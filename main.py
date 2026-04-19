@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response, HTTPException
 import aiohttp
 import aiofiles
+import uvicorn
 
 load_dotenv()
 
