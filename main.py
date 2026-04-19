@@ -17,12 +17,11 @@ from fastapi import FastAPI, Request, Response, HTTPException
 import aiohttp
 import aiofiles
 
-# Загружаем переменные из .env (если файл существует)
 load_dotenv()
 
-# === ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
+# === ДИАГНОСТИКА ПРИ ЗАПУСКЕ ===
 print("=" * 60)
-print("ENVIRONMENT VARIABLES CHECK")
+print("ENVIRONMENT VARIABLES CHECK - MAX Bot")
 print("=" * 60)
 print(f"MAX_BOT_TOKEN: {'✓ SET' if os.getenv('MAX_BOT_TOKEN') else '✗ MISSING'}")
 if os.getenv('MAX_BOT_TOKEN'):
@@ -33,7 +32,6 @@ print(f"ADMIN_CHAT_ID: {os.getenv('ADMIN_CHAT_ID', '✗ MISSING')}")
 print(f"DEEPSEEK_API_KEY: {'✓ SET' if os.getenv('DEEPSEEK_API_KEY') else '✗ MISSING'}")
 print(f"YKASSA_SHOP_ID: {os.getenv('YKASSA_SHOP_ID', '✗ MISSING')}")
 print(f"YKASSA_SECRET_KEY: {'✓ SET' if os.getenv('YKASSA_SECRET_KEY') else '✗ MISSING'}")
-print(f"YKASSA_TEST_MODE: {os.getenv('YKASSA_TEST_MODE', '✗ MISSING')}")
 print(f"PORT: {os.getenv('PORT', '8000')}")
 print("=" * 60)
 
@@ -45,15 +43,11 @@ YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "test")
 YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "test")
 YKASSA_TEST_MODE = os.getenv("YKASSA_TEST_MODE", "true").lower() == "true"
 
-# Проверка наличия обязательных переменных
 if not MAX_BOT_TOKEN:
-    logging.error("❌ MAX_BOT_TOKEN not found in environment!")
-    # Для теста - можно захардкодить, но потом убрать!
-    # MAX_BOT_TOKEN = "f9LHodD0cOIgRoB98OIQNqwfz_Tyjfn0rYl9REwshxQ4Q7-6jwmd_feZ4h98RVjFnUmlKyRYs3Da96qcJgWV"
-    # print("⚠️ WARNING: Using hardcoded token for testing!")
+    print("❌ ERROR: MAX_BOT_TOKEN not found in environment variables")
     raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in environment variables")
 
-MAX_API_URL = "https://platform-api.max.ru"
+MAX_API_URL = "https://api.max.ru/v1"
 YKASSA_API_URL = "https://api.yookassa.ru/v3"
 
 LOGS_DIR = Path("./logs")
@@ -69,14 +63,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Логируем статус переменных
 logger.info("=" * 50)
 logger.info("APPLICATION STARTING WITH CONFIGURATION:")
 logger.info(f"MAX_BOT_TOKEN: {'✓ SET' if MAX_BOT_TOKEN else '✗ MISSING'}")
 logger.info(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID if ADMIN_CHAT_ID else '✗ MISSING'}")
 logger.info(f"DEEPSEEK_API_KEY: {'✓ SET' if DEEPSEEK_API_KEY else '✗ MISSING'}")
-logger.info(f"YKASSA_SHOP_ID: {YKASSA_SHOP_ID if YKASSA_SHOP_ID != 'test' else 'test mode'}")
-logger.info(f"YKASSA_SECRET_KEY: {'✓ SET' if YKASSA_SECRET_KEY != 'test' else 'test mode'}")
 logger.info("=" * 50)
 
 DB_PATH = "salesplan.db"
@@ -361,7 +352,7 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
                 }
             }
         ]
-    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {MAX_BOT_TOKEN}", "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
@@ -382,7 +373,7 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
                 }
             }
         ]
-    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {MAX_BOT_TOKEN}", "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
@@ -394,7 +385,7 @@ async def send_notification(chat_id: str, text: str):
     """Одноразовое уведомление"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
-    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {MAX_BOT_TOKEN}", "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
@@ -407,7 +398,7 @@ async def upload_file_to_max(file_path: str, file_type: str = "file"):
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{MAX_API_URL}/uploads?type={file_type}",
-            headers={"Authorization": MAX_BOT_TOKEN}
+            headers={"Authorization": f"Bearer {MAX_BOT_TOKEN}"}
         ) as resp:
             if resp.status != 200:
                 logger.error(f"Failed to get upload URL: {await resp.text()}")
@@ -443,7 +434,7 @@ async def send_file_message(chat_id: str, text: str, file_path: str, file_type: 
         "text": text,
         "attachments": [attachment]
     }
-    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {MAX_BOT_TOKEN}", "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
@@ -492,14 +483,15 @@ async def check_yookassa_payment(payment_id: str):
                 logger.error(f"Failed to check payment: {await resp.text()}")
                 return None
 
-# === КЛАВИАТУРЫ ===
+# === КЛАВИАТУРЫ (ИСПРАВЛЕНО: callback_data вместо payload) ===
 def get_main_menu_keyboard():
+    """Главное меню"""
     return [
         [
             {
                 "type": "callback",
                 "text": "📊 Бесплатный аудит",
-                "payload": CALLBACK_START_AUDIT,
+                "callback_data": CALLBACK_START_AUDIT,
                 "intent": "default"
             }
         ]
@@ -511,7 +503,7 @@ def get_after_diagnostic_keyboard():
             {
                 "type": "callback",
                 "text": "🔥 План продаж за 490 ₽",
-                "payload": CALLBACK_MY_PREMIUM,
+                "callback_data": CALLBACK_MY_PREMIUM,
                 "intent": "default"
             }
         ],
@@ -519,7 +511,7 @@ def get_after_diagnostic_keyboard():
             {
                 "type": "callback",
                 "text": "👩‍💼 Бесплатная консультация",
-                "payload": CALLBACK_BOOK_CALL,
+                "callback_data": CALLBACK_BOOK_CALL,
                 "intent": "default"
             }
         ]
@@ -530,12 +522,12 @@ def get_survey_keyboard(question_index: int):
         return None
     q = SURVEY_QUESTIONS[question_index]
     keyboard = []
-    for payload, label in q["options"]:
+    for callback_val, label in q["options"]:
         keyboard.append([
             {
                 "type": "callback",
                 "text": label,
-                "payload": payload,
+                "callback_data": callback_val,
                 "intent": "default"
             }
         ])
@@ -547,7 +539,7 @@ def get_format_choice_keyboard():
             {
                 "type": "callback",
                 "text": "📝 В сообщении",
-                "payload": CALLBACK_SEND_AS_TEXT,
+                "callback_data": CALLBACK_SEND_AS_TEXT,
                 "intent": "default"
             }
         ],
@@ -555,7 +547,7 @@ def get_format_choice_keyboard():
             {
                 "type": "callback",
                 "text": "📄 В файле .txt",
-                "payload": CALLBACK_SEND_AS_FILE,
+                "callback_data": CALLBACK_SEND_AS_FILE,
                 "intent": "default"
             }
         ]
@@ -574,7 +566,7 @@ def get_payment_keyboard(confirmation_url: str):
             {
                 "type": "callback",
                 "text": "✅ Я оплатил(а)",
-                "payload": CALLBACK_I_PAID,
+                "callback_data": CALLBACK_I_PAID,
                 "intent": "default"
             }
         ],
@@ -582,7 +574,7 @@ def get_payment_keyboard(confirmation_url: str):
             {
                 "type": "callback",
                 "text": "❓ Помощь",
-                "payload": CALLBACK_HELP,
+                "callback_data": CALLBACK_HELP,
                 "intent": "default"
             }
         ]
@@ -594,7 +586,7 @@ def get_post_download_keyboard():
             {
                 "type": "callback",
                 "text": "👩‍💼 Разобрать план (30 мин)",
-                "payload": CALLBACK_BOOK_CALL,
+                "callback_data": CALLBACK_BOOK_CALL,
                 "intent": "default"
             }
         ],
@@ -620,6 +612,10 @@ def get_channel_subscribe_keyboard():
 
 # === DEEPSEEK API ===
 async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
+    if not DEEPSEEK_API_KEY:
+        logger.error("DEEPSEEK_API_KEY not configured")
+        return None
+    
     q1_map = {Q1_SERVICE: "Услугу", Q1_INFO: "Инфопродукт", Q1_CONSULT: "Консультацию", Q1_NONE: "Пока не продаю"}
     q2_map = {Q2_LT5: "до 5k", Q2_5_20: "5k-20k", Q2_20_50: "20k-50k", Q2_50P: ">50k"}
     q3_map = {Q3_LT1K: "<10 клиентов", Q3_1_5K: "10-50", Q3_5_20K: "50-200", Q3_20KP: ">200"}
@@ -685,6 +681,11 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
 
 async def generate_premium_report(user_id: str, name: str, description: str, answers: dict, report_id: int):
     logger.info(f"Generating premium report for {user_id}")
+    if not DEEPSEEK_API_KEY:
+        update_report_status(report_id, 'failed')
+        logger.error("Cannot generate premium report: DEEPSEEK_API_KEY missing")
+        return
+    
     q1_map = {Q1_SERVICE: "Услугу", Q1_INFO: "Инфопродукт", Q1_CONSULT: "Консультацию", Q1_NONE: "Пока не продаю"}
     q2_map = {Q2_LT5: "до 5k", Q2_5_20: "5k-20k", Q2_20_50: "20k-50k", Q2_50P: ">50k"}
     q3_map = {Q3_LT1K: "<10", Q3_1_5K: "10-50", Q3_5_20K: "50-200", Q3_20KP: ">200"}
@@ -739,18 +740,27 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
             async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
                 await f.write(report_text)
             update_report_status(report_id, 'ready', str(filepath))
+            logger.info(f"Premium report generated for user {user_id}")
         else:
             update_report_status(report_id, 'failed')
+            logger.error(f"Premium report API error: {response.status_code}")
     except Exception as e:
         logger.error(f"Premium report error: {e}")
         update_report_status(report_id, 'failed')
 
 # === ОБРАБОТЧИКИ ===
 async def process_callback(chat_id: str, callback_id: str, callback_data: str):
+    """Обработка callback-запросов от кнопок"""
+    logger.info(f"=== process_callback called ===")
+    logger.info(f"chat_id: {chat_id}")
+    logger.info(f"callback_id: {callback_id}")
+    logger.info(f"callback_data: {callback_data} (type: {type(callback_data)})")
+    
     state, data = get_user_state(chat_id)
     log_event(chat_id, f"callback_{callback_data}")
 
     if callback_data == CALLBACK_START_AUDIT:
+        logger.info(f"Processing START_AUDIT for user {chat_id}")
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {"answers": {}, "survey_step": 0})
         await send_callback_answer(callback_id,
             "Окей, погнали! 🚀\n\nНапиши название своего онлайн-бизнеса (как ты представляешь его клиентам):",
@@ -758,6 +768,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         return
 
     if callback_data == CALLBACK_MY_PREMIUM:
+        logger.info(f"Processing MY_PREMIUM for user {chat_id}")
         biz_data = get_business_data(chat_id)
         form_data = get_form(chat_id)
         if not biz_data or not form_data:
@@ -794,6 +805,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         return
 
     if callback_data == CALLBACK_I_PAID:
+        logger.info(f"Processing I_PAID for user {chat_id}")
         payment_id = get_pending_payment(chat_id)
         if payment_id:
             status = await check_yookassa_payment(payment_id)
@@ -805,11 +817,20 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                     f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {chat_id}\nБизнес: {biz_data['name'] if biz_data else 'не указан'}\nСумма: 490 ₽\n⏰ {format_moscow_time()}")
                 report_status = get_report_status(chat_id)
                 if report_status and report_status['status'] == 'ready':
+                    # Создаем клавиатуру для скачивания
+                    download_keyboard = [[
+                        {
+                            "type": "callback",
+                            "text": "📥 Скачать план",
+                            "callback_data": CALLBACK_DOWNLOAD_REPORT,
+                            "intent": "default"
+                        }
+                    ]]
                     await send_callback_answer(callback_id,
                         "🎉 Ура! Твой план продаж готов!\n\n"
                         "Я подготовила для тебя персональную стратегию с анализом конкурентов и пошаговым планом.\n\n"
                         "👇 Жми кнопку ниже — и забирай результат",
-                        [[[{"text": "📥 Скачать план", "callback_data": CALLBACK_DOWNLOAD_REPORT}]]])
+                        download_keyboard)
                 else:
                     await send_callback_answer(callback_id,
                         "✅ Оплата прошла, спасибо!\n\n"
@@ -831,6 +852,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         return
 
     if callback_data == CALLBACK_DOWNLOAD_REPORT:
+        logger.info(f"Processing DOWNLOAD_REPORT for user {chat_id}")
         report_status = get_report_status(chat_id)
         if report_status and report_status['status'] == 'ready' and report_status['file_path']:
             filepath = Path(report_status['file_path'])
@@ -850,6 +872,8 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                     "✅ Я найду ТВОЁ одно действие, которое принесёт деньги прямо сейчас\n"
                     "🎁 А пока думаешь, забери бесплатный мини-курс «3 шага к первой продаже»")
                 await send_message(chat_id, "👇 Жми кнопку, получи мини-курс", get_post_download_keyboard())
+                # Отвечаем на callback, чтобы убрать индикатор загрузки
+                await send_callback_answer(callback_id, "✅ Отчет отправлен!", None)
             else:
                 await send_callback_answer(callback_id,
                     "❌ Ой, файл не найден. Напиши мне в личные сообщения — поможем.",
@@ -861,6 +885,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         return
 
     if callback_data == CALLBACK_HELP:
+        logger.info(f"Processing HELP for user {chat_id}")
         await send_notification(ADMIN_CHAT_ID, f"❓ Запрос помощи от {chat_id}\n⏰ {format_moscow_time()}")
         await send_callback_answer(callback_id,
             "✅ Запрос отправлен! Я свяжусь с тобой в ближайшее время.",
@@ -868,6 +893,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         return
 
     if callback_data == CALLBACK_BOOK_CALL:
+        logger.info(f"Processing BOOK_CALL for user {chat_id}")
         save_user_state(chat_id, STATE_WAITING_CALL, {})
         await send_callback_answer(callback_id,
             "Привет! Я Вероника Макаревич.\n\n"
@@ -891,11 +917,13 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             None)
         return
 
+    # Обработка ответов на опросник
     if callback_data in [Q1_SERVICE, Q1_INFO, Q1_CONSULT, Q1_NONE,
                          Q2_LT5, Q2_5_20, Q2_20_50, Q2_50P,
                          Q3_LT1K, Q3_1_5K, Q3_5_20K, Q3_20KP,
                          Q4_300, Q4_500, Q4_1M, Q4_SCALE,
                          Q5_YES, Q5_NO, Q5_PROGRESS]:
+        logger.info(f"Processing survey answer: {callback_data} for user {chat_id}")
         _, user_data = get_user_state(chat_id)
         step = user_data.get("survey_step", 0)
         if step < len(SURVEY_QUESTIONS):
@@ -927,34 +955,38 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 if report_text:
                     log_event(chat_id, "free_report_generated")
                     save_user_state(chat_id, STATE_MENU, {"generated_report": report_text, "report_title": biz_data["name"]})
-                    await send_callback_answer(callback_id,
+                    await send_message(chat_id,
                         "✅ Диагностика готова! Как тебе удобнее получить?",
                         get_format_choice_keyboard())
                 else:
-                    await send_callback_answer(callback_id,
+                    await send_message(chat_id,
                         "⚠️ Диагностика готова (по шаблону). Как удобнее получить?",
                         get_format_choice_keyboard())
         return
 
     if callback_data == CALLBACK_SEND_AS_TEXT:
+        logger.info(f"Processing SEND_AS_TEXT for user {chat_id}")
         _, user_data = get_user_state(chat_id)
         report_text = user_data.get("generated_report")
         if report_text:
             max_len = 3800
             if len(report_text) > max_len:
-                await send_callback_answer(callback_id, "✅ Твоя диагностика:\n\n" + report_text[:max_len], None)
+                await send_message(chat_id, "✅ Твоя диагностика:\n\n" + report_text[:max_len])
                 await send_notification(chat_id, report_text[max_len:max_len+max_len])
             else:
-                await send_callback_answer(callback_id, "✅ Твоя диагностика:\n\n" + report_text, None)
+                await send_message(chat_id, "✅ Твоя диагностика:\n\n" + report_text)
         await send_message(chat_id,
             "🔥 Ну как тебе?\n\n"
             "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
             "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.",
             get_after_diagnostic_keyboard())
         save_user_state(chat_id, STATE_MENU, {})
+        # Отвечаем на callback, чтобы убрать индикатор
+        await send_callback_answer(callback_id, "✅ Диагностика отправлена!", None)
         return
 
     if callback_data == CALLBACK_SEND_AS_FILE:
+        logger.info(f"Processing SEND_AS_FILE for user {chat_id}")
         _, user_data = get_user_state(chat_id)
         report_text = user_data.get("generated_report")
         title = user_data.get("report_title", "business")
@@ -975,9 +1007,11 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.",
             get_after_diagnostic_keyboard())
         save_user_state(chat_id, STATE_MENU, {})
+        await send_callback_answer(callback_id, "✅ Файл отправлен!", None)
         return
 
 async def process_message(user_id: str, text: str):
+    """Обработка текстовых сообщений"""
     logger.info(f"PROCESS_MESSAGE called: user_id={user_id}, text={text}")
     state, data = get_user_state(str(user_id))
     log_event(str(user_id), f"message: {text[:50]}")
@@ -1114,7 +1148,7 @@ async def root():
 async def webhook(request: Request):
     try:
         payload = await request.json()
-        logger.info(f"FULL PAYLOAD: {payload}")
+        logger.info(f"FULL PAYLOAD: {json.dumps(payload, ensure_ascii=False)[:500]}")
 
         if "message" in payload:
             msg = payload["message"]
@@ -1128,8 +1162,9 @@ async def webhook(request: Request):
             cb = payload["callback_query"]
             user_id = cb.get("user", {}).get("id")
             callback_id = cb.get("callback_id")
-            data = cb.get("payload")
-            logger.info(f"CALLBACK RECEIVED: user_id={user_id}, callback_id={callback_id}, payload={data}")
+            # ВАЖНО: используем callback_data (как в клавиатуре)
+            data = cb.get("callback_data")
+            logger.info(f"CALLBACK RECEIVED: user_id={user_id}, callback_id={callback_id}, data={data}")
             if user_id and data:
                 await process_callback(str(user_id), str(callback_id), data)
 
@@ -1139,6 +1174,5 @@ async def webhook(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    import uvicorn
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run(app, host="0.0.0.0", port=port)
