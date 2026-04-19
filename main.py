@@ -494,7 +494,7 @@ async def check_yookassa_payment(payment_id: str):
                 logger.error(f"Failed to check payment: {await resp.text()}")
                 return None
 
-# === КЛАВИАТУРЫ ===
+# === КЛАВИАТУРЫ (с полем payload) ===
 def get_main_menu_keyboard():
     """Главное меню"""
     return [
@@ -502,7 +502,7 @@ def get_main_menu_keyboard():
             {
                 "type": "callback",
                 "text": "📊 Бесплатный аудит",
-                "callback_data": CALLBACK_START_AUDIT,
+                "payload": CALLBACK_START_AUDIT,
                 "intent": "default"
             }
         ]
@@ -514,7 +514,7 @@ def get_after_diagnostic_keyboard():
             {
                 "type": "callback",
                 "text": "🔥 План продаж за 490 ₽",
-                "callback_data": CALLBACK_MY_PREMIUM,
+                "payload": CALLBACK_MY_PREMIUM,
                 "intent": "default"
             }
         ],
@@ -522,7 +522,7 @@ def get_after_diagnostic_keyboard():
             {
                 "type": "callback",
                 "text": "👩‍💼 Бесплатная консультация",
-                "callback_data": CALLBACK_BOOK_CALL,
+                "payload": CALLBACK_BOOK_CALL,
                 "intent": "default"
             }
         ]
@@ -533,12 +533,12 @@ def get_survey_keyboard(question_index: int):
         return None
     q = SURVEY_QUESTIONS[question_index]
     keyboard = []
-    for callback_val, label in q["options"]:
+    for payload_val, label in q["options"]:
         keyboard.append([
             {
                 "type": "callback",
                 "text": label,
-                "callback_data": callback_val,
+                "payload": payload_val,
                 "intent": "default"
             }
         ])
@@ -550,7 +550,7 @@ def get_format_choice_keyboard():
             {
                 "type": "callback",
                 "text": "📝 В сообщении",
-                "callback_data": CALLBACK_SEND_AS_TEXT,
+                "payload": CALLBACK_SEND_AS_TEXT,
                 "intent": "default"
             }
         ],
@@ -558,7 +558,7 @@ def get_format_choice_keyboard():
             {
                 "type": "callback",
                 "text": "📄 В файле .txt",
-                "callback_data": CALLBACK_SEND_AS_FILE,
+                "payload": CALLBACK_SEND_AS_FILE,
                 "intent": "default"
             }
         ]
@@ -577,7 +577,7 @@ def get_payment_keyboard(confirmation_url: str):
             {
                 "type": "callback",
                 "text": "✅ Я оплатил(а)",
-                "callback_data": CALLBACK_I_PAID,
+                "payload": CALLBACK_I_PAID,
                 "intent": "default"
             }
         ],
@@ -585,7 +585,7 @@ def get_payment_keyboard(confirmation_url: str):
             {
                 "type": "callback",
                 "text": "❓ Помощь",
-                "callback_data": CALLBACK_HELP,
+                "payload": CALLBACK_HELP,
                 "intent": "default"
             }
         ]
@@ -597,7 +597,7 @@ def get_post_download_keyboard():
             {
                 "type": "callback",
                 "text": "👩‍💼 Разобрать план (30 мин)",
-                "callback_data": CALLBACK_BOOK_CALL,
+                "payload": CALLBACK_BOOK_CALL,
                 "intent": "default"
             }
         ],
@@ -832,7 +832,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                         {
                             "type": "callback",
                             "text": "📥 Скачать план",
-                            "callback_data": CALLBACK_DOWNLOAD_REPORT,
+                            "payload": CALLBACK_DOWNLOAD_REPORT,
                             "intent": "default"
                         }
                     ]]
@@ -1170,8 +1170,9 @@ async def webhook(request: Request):
             cb = payload["callback_query"]
             user_id = cb.get("user", {}).get("id")
             callback_id = cb.get("callback_id")
-            data = cb.get("callback_data")
-            logger.info(f"CALLBACK RECEIVED: user_id={user_id}, callback_id={callback_id}, data={data}")
+            # Используем поле "payload" (как в клавиатуре)
+            data = cb.get("payload")
+            logger.info(f"CALLBACK RECEIVED: user_id={user_id}, callback_id={callback_id}, payload={data}")
             if user_id and data:
                 await process_callback(str(user_id), str(callback_id), data)
 
