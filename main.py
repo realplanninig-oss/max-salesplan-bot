@@ -48,7 +48,8 @@ if not MAX_BOT_TOKEN:
     print("❌ ERROR: MAX_BOT_TOKEN not found in environment variables")
     raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in environment variables")
 
-MAX_API_URL = "https://api.max.ru/v1"
+# Правильный URL для MAX API
+MAX_API_URL = "https://platform-api.max.ru"
 YKASSA_API_URL = "https://api.yookassa.ru/v3"
 
 LOGS_DIR = Path("./logs")
@@ -359,7 +360,10 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
             if resp.status != 200:
                 error_text = await resp.text()
                 logger.error(f"send_message failed: {resp.status} - {error_text}")
-            return await resp.json()
+            try:
+                return await resp.json()
+            except:
+                return {"error": "Failed to parse response"}
 
 async def send_callback_answer(callback_id: str, text: str, keyboard: list = None):
     """Ответ на callback (обновление сообщения после нажатия кнопки)"""
@@ -380,7 +384,10 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
             if resp.status != 200:
                 error_text = await resp.text()
                 logger.error(f"send_callback_answer failed: {resp.status} - {error_text}")
-            return await resp.json()
+            try:
+                return await resp.json()
+            except:
+                return {"error": "Failed to parse response"}
 
 async def send_notification(chat_id: str, text: str):
     """Одноразовое уведомление"""
@@ -392,7 +399,10 @@ async def send_notification(chat_id: str, text: str):
             if resp.status != 200:
                 error_text = await resp.text()
                 logger.error(f"send_notification failed: {resp.status} - {error_text}")
-            return await resp.json()
+            try:
+                return await resp.json()
+            except:
+                return {"error": "Failed to parse response"}
 
 # === ФАЙЛЫ ===
 async def upload_file_to_max(file_path: str, file_type: str = "file"):
@@ -484,7 +494,7 @@ async def check_yookassa_payment(payment_id: str):
                 logger.error(f"Failed to check payment: {await resp.text()}")
                 return None
 
-# === КЛАВИАТУРЫ (ИСПРАВЛЕНО: callback_data вместо payload) ===
+# === КЛАВИАТУРЫ ===
 def get_main_menu_keyboard():
     """Главное меню"""
     return [
@@ -818,7 +828,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                     f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {chat_id}\nБизнес: {biz_data['name'] if biz_data else 'не указан'}\nСумма: 490 ₽\n⏰ {format_moscow_time()}")
                 report_status = get_report_status(chat_id)
                 if report_status and report_status['status'] == 'ready':
-                    # Создаем клавиатуру для скачивания
                     download_keyboard = [[
                         {
                             "type": "callback",
@@ -873,7 +882,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                     "✅ Я найду ТВОЁ одно действие, которое принесёт деньги прямо сейчас\n"
                     "🎁 А пока думаешь, забери бесплатный мини-курс «3 шага к первой продаже»")
                 await send_message(chat_id, "👇 Жми кнопку, получи мини-курс", get_post_download_keyboard())
-                # Отвечаем на callback, чтобы убрать индикатор загрузки
                 await send_callback_answer(callback_id, "✅ Отчет отправлен!", None)
             else:
                 await send_callback_answer(callback_id,
@@ -982,7 +990,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.",
             get_after_diagnostic_keyboard())
         save_user_state(chat_id, STATE_MENU, {})
-        # Отвечаем на callback, чтобы убрать индикатор
         await send_callback_answer(callback_id, "✅ Диагностика отправлена!", None)
         return
 
@@ -1163,7 +1170,6 @@ async def webhook(request: Request):
             cb = payload["callback_query"]
             user_id = cb.get("user", {}).get("id")
             callback_id = cb.get("callback_id")
-            # ВАЖНО: используем callback_data (как в клавиатуре)
             data = cb.get("callback_data")
             logger.info(f"CALLBACK RECEIVED: user_id={user_id}, callback_id={callback_id}, data={data}")
             if user_id and data:
