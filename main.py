@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (с inline-клавиатурой)
+# File: main.py — бот Salesplan для MAX (ПРАВИЛЬНЫЙ формат inline-кнопок)
 
 import asyncio
 import logging
@@ -24,8 +24,6 @@ if os.getenv('MAX_BOT_TOKEN'):
     token = os.getenv('MAX_BOT_TOKEN')
     print(f"  Length: {len(token)} characters")
     print(f"  First 10 chars: {token[:10]}...")
-print(f"ADMIN_CHAT_ID: {os.getenv('ADMIN_CHAT_ID', '✗ MISSING')}")
-print(f"DEEPSEEK_API_KEY: {'✓ SET' if os.getenv('DEEPSEEK_API_KEY') else '✗ MISSING'}")
 print(f"PORT: {os.getenv('PORT', '8000')}")
 print("=" * 60)
 
@@ -36,32 +34,20 @@ if not MAX_BOT_TOKEN:
 
 MAX_API_URL = "https://platform-api.max.ru"
 
-LOGS_DIR = Path("./logs")
-LOGS_DIR.mkdir(exist_ok=True)
-
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-    handlers=[
-        logging.FileHandler(LOGS_DIR / "bot.log", encoding='utf-8'),
-        logging.StreamHandler()
-    ]
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# === КОМАНДЫ ===
-COMMAND_AUDIT = "📊 Бесплатный аудит"
-COMMAND_PREMIUM = "🔥 План продаж за 490 ₽"
-COMMAND_CONSULT = "👩‍💼 Бесплатная консультация"
-COMMAND_HELP = "❓ Помощь"
-
 # === ОТПРАВКА СООБЩЕНИЙ ===
-async def send_message_with_inline_keyboard(chat_id: str, text: str, buttons: list):
-    """Отправка сообщения с inline-клавиатурой"""
+async def send_message(chat_id: str, text: str, buttons: list = None):
+    """Отправка сообщения с inline-клавиатурой (правильный формат)"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
-    payload = {
-        "text": text,
-        "attachments": [
+    payload = {"text": text}
+    
+    if buttons:
+        payload["attachments"] = [
             {
                 "type": "inline_keyboard",
                 "payload": {
@@ -69,33 +55,16 @@ async def send_message_with_inline_keyboard(chat_id: str, text: str, buttons: li
                 }
             }
         ]
-    }
+    
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     
-    logger.info(f"Sending inline keyboard to {chat_id}")
     logger.info(f"Payload: {json.dumps(payload, ensure_ascii=False)}")
     
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             response_text = await resp.text()
-            logger.info(f"Response status: {resp.status}")
-            logger.info(f"Response body: {response_text}")
-            if resp.status != 200:
-                logger.error(f"send_message failed: {resp.status} - {response_text}")
-            return {"status": resp.status, "body": response_text}
-
-async def send_simple_message(chat_id: str, text: str):
-    """Отправка простого текстового сообщения без клавиатуры"""
-    url = f"{MAX_API_URL}/messages?user_id={chat_id}"
-    payload = {"text": text}
-    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status != 200:
-                error_text = await resp.text()
-                logger.error(f"send_simple_message failed: {resp.status} - {error_text}")
-            return {"status": resp.status}
+            logger.info(f"Response: {resp.status} - {response_text}")
+            return resp.status
 
 async def answer_callback(callback_id: str, text: str):
     """Ответ на callback запрос"""
@@ -105,70 +74,81 @@ async def answer_callback(callback_id: str, text: str):
     
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status != 200:
-                error_text = await resp.text()
-                logger.error(f"answer_callback failed: {resp.status} - {error_text}")
-            return {"status": resp.status}
+            logger.info(f"Answer callback response: {resp.status}")
+            return resp.status
+
+# === ПРАВИЛЬНЫЙ ФОРМАТ КНОПОК (по документации MAX) ===
+def get_main_menu_buttons():
+    """Главное меню - правильный формат для MAX API"""
+    return [
+        [
+            {
+                "text": "📊 Бесплатный аудит",
+                "callback": {
+                    "text": "📊 Бесплатный аудит",
+                    "payload": "audit"
+                }
+            },
+            {
+                "text": "🔥 План продаж за 490 ₽",
+                "callback": {
+                    "text": "🔥 План продаж за 490 ₽",
+                    "payload": "premium"
+                }
+            }
+        ],
+        [
+            {
+                "text": "👩‍💼 Бесплатная консультация",
+                "callback": {
+                    "text": "👩‍💼 Бесплатная консультация",
+                    "payload": "consult"
+                }
+            },
+            {
+                "text": "❓ Помощь",
+                "callback": {
+                    "text": "❓ Помощь",
+                    "payload": "help"
+                }
+            }
+        ]
+    ]
 
 # === ОБРАБОТЧИК ===
 async def process_message(user_id: str, text: str):
     logger.info(f"Process message: {user_id} -> {text}")
     
     if text == "/start":
-        # Inline-кнопки (остаются на месте, не исчезают)
-        buttons = [
-            [
-                {"text": COMMAND_AUDIT, "callback_data": "audit"},
-                {"text": COMMAND_PREMIUM, "callback_data": "premium"}
-            ],
-            [
-                {"text": COMMAND_CONSULT, "callback_data": "consult"},
-                {"text": COMMAND_HELP, "callback_data": "help"}
-            ]
-        ]
-        await send_message_with_inline_keyboard(
+        await send_message(
             str(user_id),
             "Привет! Я Вероника, продюсер экспертов.\n\n"
             "Контент вроде делаешь, подписчики есть, а денег нет? Знакомо.\n\n"
             "👇 Нажми на кнопку:",
-            buttons
+            get_main_menu_buttons()
         )
     else:
-        await send_simple_message(str(user_id), f"Ты написал: {text}\n\nИспользуй /start для начала.")
+        await send_message(str(user_id), f"Ты написал: {text}\n\nИспользуй /start для начала.")
 
-async def process_callback(user_id: str, callback_id: str, data: str):
-    """Обработка нажатия на inline-кнопку"""
-    logger.info(f"Process callback: user_id={user_id}, callback_id={callback_id}, data={data}")
+async def process_callback(user_id: str, callback_id: str, payload: str):
+    """Обработка нажатия на кнопку"""
+    logger.info(f"Process callback: user={user_id}, payload={payload}")
     
-    if data == "audit":
+    if payload == "audit":
         await answer_callback(callback_id, "✅ Начинаем аудит!")
-        await send_simple_message(str(user_id), 
-            "Окей, погнали! 🚀\n\nНапиши название своего онлайн-бизнеса:")
-    elif data == "premium":
+        await send_message(str(user_id), "Окей, погнали! 🚀\n\nНапиши название своего онлайн-бизнеса:")
+    elif payload == "premium":
         await answer_callback(callback_id, "🔥 План продаж")
-        await send_simple_message(str(user_id), 
-            "🔥 План продаж за 490 ₽\n\nСкоро здесь будет оплата и генерация плана.")
-    elif data == "consult":
+        await send_message(str(user_id), "🔥 План продаж за 490 ₽\n\nСкоро здесь будет оплата.")
+    elif payload == "consult":
         await answer_callback(callback_id, "👩‍💼 Консультация")
-        await send_simple_message(str(user_id), 
-            "Напиши в одном сообщении:\n"
-            "🔗 Ссылку на твой бизнес\n"
-            "👤 Твой username\n"
-            "🕐 Удобное время для звонка")
-    elif data == "help":
+        await send_message(str(user_id), "Напиши в одном сообщении:\n🔗 Ссылку на бизнес\n👤 Твой username\n🕐 Удобное время")
+    elif payload == "help":
         await answer_callback(callback_id, "❓ Помощь")
-        buttons = [
-            [{"text": COMMAND_AUDIT, "callback_data": "audit"}],
-            [{"text": COMMAND_PREMIUM, "callback_data": "premium"}],
-            [{"text": COMMAND_CONSULT, "callback_data": "consult"}]
-        ]
-        await send_message_with_inline_keyboard(
+        await send_message(
             str(user_id),
-            "Доступные команды:\n"
-            "• Бесплатный аудит\n"
-            "• План продаж за 490 ₽\n"
-            "• Бесплатная консультация",
-            buttons
+            "Доступные команды:\n• Бесплатный аудит\n• План продаж\n• Консультация",
+            get_main_menu_buttons()
         )
     else:
         await answer_callback(callback_id, "❌ Неизвестная команда")
@@ -186,37 +166,32 @@ app = FastAPI(title="MAX Bot", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
-    return {"status": "alive", "timestamp": datetime.now().isoformat()}
-
-@app.get("/")
-async def root():
-    return {"status": "MAX Bot is running", "version": "3.0"}
+    return {"status": "alive"}
 
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
         payload = await request.json()
-        logger.info(f"Webhook received: {json.dumps(payload, ensure_ascii=False)[:500]}")
+        logger.info(f"Webhook received")
         
-        # Обработка обычного сообщения
         if "message" in payload:
             msg = payload["message"]
             user_id = msg.get("sender", {}).get("user_id")
             body = msg.get("body", {})
             text = body.get("text")
-            
             if user_id and text:
                 await process_message(str(user_id), text)
         
-        # Обработка callback от кнопки
         elif "callback_query" in payload:
             cb = payload["callback_query"]
             user_id = cb.get("user", {}).get("id")
             callback_id = cb.get("callback_id")
-            data = cb.get("data") or cb.get("callback_data")
-            
-            if user_id and callback_id and data:
-                await process_callback(str(user_id), str(callback_id), data)
+            # Правильный путь: callback.payload
+            callback_obj = cb.get("callback", {})
+            payload_data = callback_obj.get("payload")
+            logger.info(f"Callback: user={user_id}, payload={payload_data}")
+            if user_id and callback_id and payload_data:
+                await process_callback(str(user_id), str(callback_id), payload_data)
 
         return Response(status_code=200)
     except Exception as e:
