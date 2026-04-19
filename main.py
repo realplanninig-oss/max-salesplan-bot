@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (с reply-кнопками, рабочий вариант)
+# File: main.py — бот Salesplan для MAX (с reply-кнопками, исправленный)
 
 import asyncio
 import logging
@@ -48,7 +48,6 @@ if not MAX_BOT_TOKEN:
     print("❌ ERROR: MAX_BOT_TOKEN not found in environment variables")
     raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in environment variables")
 
-# Правильный URL для MAX API
 MAX_API_URL = "https://platform-api.max.ru"
 YKASSA_API_URL = "https://api.yookassa.ru/v3"
 
@@ -341,7 +340,7 @@ async def send_message(chat_id: str, text: str, keyboard: list = None, one_time_
     """Отправка сообщения с reply-кнопками"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
-    if keyboard:
+    if keyboard and len(keyboard) > 0:
         payload["attachments"] = [
             {
                 "type": "reply_keyboard",
@@ -650,12 +649,14 @@ async def process_message(user_id: str, text: str):
                 "👇 Нажми на кнопку ниже:",
                 get_main_menu_keyboard())
             save_user_state(str(user_id), STATE_MENU, {})
+            return
         
         elif text == COMMAND_AUDIT:
             save_user_state(str(user_id), STATE_AWAITING_BUSINESS_NAME, {"answers": {}, "survey_step": 0})
             await send_message(str(user_id),
                 "Окей, погнали! 🚀\n\nНапиши название своего онлайн-бизнеса (как ты представляешь его клиентам):",
                 None)
+            return
         
         elif text == COMMAND_PREMIUM:
             biz_data = get_business_data(str(user_id))
@@ -683,6 +684,7 @@ async def process_message(user_id: str, text: str):
                 await send_message(str(user_id),
                     "❌ Ошибка при создании платежа. Попробуй позже.",
                     get_main_menu_keyboard())
+            return
         
         elif text == COMMAND_CONSULT:
             save_user_state(str(user_id), STATE_WAITING_CALL, {})
@@ -695,6 +697,7 @@ async def process_message(user_id: str, text: str):
                 "🕐 Удобное время для созвона (по Москве)\n\n"
                 "👇 Жду",
                 None)
+            return
         
         elif text == COMMAND_HELP:
             await send_message(str(user_id),
@@ -706,9 +709,118 @@ async def process_message(user_id: str, text: str):
                 "• 👩‍💼 Бесплатная консультация - записаться на разбор\n\n"
                 "По всем вопросам: @veronika_makarevich",
                 get_main_menu_keyboard())
+            return
         
-        else:
-            await send_message(str(user_id), "Используй кнопки меню или напиши /start", get_main_menu_keyboard())
+        # Проверяем, есть ли сохраненный отчет для выбора формата
+        if "generated_report" in data:
+            if text == "📝 В сообщении":
+                report_text = data.get("generated_report")
+                if report_text:
+                    max_len = 3800
+                    if len(report_text) > max_len:
+                        await send_message(str(user_id), "✅ Твоя диагностика:\n\n" + report_text[:max_len], None)
+                        await send_notification(str(user_id), report_text[max_len:max_len+max_len])
+                    else:
+                        await send_message(str(user_id), "✅ Твоя диагностика:\n\n" + report_text, None)
+                await send_message(str(user_id),
+                    "🔥 Ну как тебе?\n\n"
+                    "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
+                    "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.",
+                    get_main_menu_keyboard())
+                save_user_state(str(user_id), STATE_MENU, {})
+                return
+            
+            elif text == "📄 В файле .txt":
+                report_text = data.get("generated_report")
+                title = data.get("report_title", "business")
+                if report_text:
+                    filename = f"Diagnostic_{title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                    filepath = REPORTS_DIR / filename
+                    async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
+                        await f.write(report_text)
+                    await send_file_message(
+                        str(user_id),
+                        "📄 Твоя бесплатная диагностика",
+                        str(filepath),
+                        "file"
+                    )
+                await send_message(str(user_id),
+                    "🔥 Ну как тебе?\n\n"
+                    "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
+                    "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.",
+                    get_main_menu_keyboard())
+                save_user_state(str(user_id), STATE_MENU, {})
+                return
+        
+        # Обработка "Оплатил"
+        if text.lower() in ["оплатил", "я оплатил", "оплатила", "я оплатила"]:
+            payment_id = get_pending_payment(str(user_id))
+            if payment_id:
+                status = await check_yookassa_payment(payment_id)
+                if status == "succeeded":
+                    log_event(str(user_id), "payment_made", payment_id)
+                    clear_pending_payment(str(user_id))
+                    biz_data = get_business_data(str(user_id))
+                    await send_notification(ADMIN_CHAT_ID,
+                        f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {user_id}\nБизнес: {biz_data['name'] if biz_data else 'не указан'}\nСумма: 490 ₽\n⏰ {format_moscow_time()}")
+                    
+                    report_status = get_report_status(str(user_id))
+                    if report_status and report_status['status'] == 'ready' and report_status['file_path']:
+                        filepath = Path(report_status['file_path'])
+                        if filepath.exists():
+                            await send_file_message(
+                                str(user_id),
+                                "🎉 Ура! Твой план продаж готов!\n\n"
+                                "Я подготовила для тебя персональную стратегию с анализом конкурентов и пошаговым планом.",
+                                str(filepath),
+                                "file"
+                            )
+                            await send_message(str(user_id),
+                                "👇 Жми кнопку, получи мини-курс",
+                                get_post_download_keyboard())
+                        else:
+                            await send_message(str(user_id),
+                                "❌ Ой, файл не найден. Напиши мне в личные сообщения — поможем.",
+                                get_main_menu_keyboard())
+                    else:
+                        await send_message(str(user_id),
+                            "✅ Оплата прошла, спасибо!\n\n"
+                            "План ещё готовится — обычно 5-10 минут. Я пришлю уведомление, как только всё будет готово.",
+                            get_main_menu_keyboard())
+                elif status == "pending":
+                    await send_message(str(user_id),
+                        "⏳ Платёж ещё не подтверждён. Подожди немного и напиши «Оплатил» снова.\n\n"
+                        "Если деньги уже списались — напиши «Помощь».",
+                        get_main_menu_keyboard())
+                else:
+                    await send_message(str(user_id),
+                        "❌ Платёж не найден или отменён. Попробуй оплатить снова.",
+                        get_main_menu_keyboard())
+            else:
+                await send_message(str(user_id),
+                    "❌ Не могу найти информацию о платеже. Попробуй оплатить снова.",
+                    get_main_menu_keyboard())
+            return
+        
+        # Обработка "Подписаться на канал"
+        if text == "📢 Подписаться на канал":
+            await send_message(str(user_id),
+                "🔗 Подпишись на мой канал в MAX:\nhttps://max.ru/id781407988795_biz\n\n"
+                "После подписки напиши «Подписался», и я пришлю мини-курс!",
+                None)
+            return
+        
+        if text == "📚 Получить мини-курс":
+            await send_message(str(user_id),
+                "🎁 Мини-курс «3 шага к первой продаже»:\n\n"
+                "1. Определи свою целевую аудиторию\n"
+                "2. Создай оффер, от которого нельзя отказаться\n"
+                "3. Настрой простую воронку из 3 сообщений\n\n"
+                "Хочешь подробный разбор? Запишись на консультацию!",
+                get_main_menu_keyboard())
+            return
+
+        await send_message(str(user_id), "Используй кнопки меню или напиши /start", get_main_menu_keyboard())
         return
 
     # Ожидание названия бизнеса
@@ -764,48 +876,6 @@ async def process_message(user_id: str, text: str):
                     await send_message(str(user_id), "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", get_format_choice_keyboard(), one_time_keyboard=True)
         return
 
-    # Выбор формата получения диагностики
-    if state == STATE_MENU and "generated_report" in data:
-        if text == "📝 В сообщении":
-            report_text = data.get("generated_report")
-            if report_text:
-                max_len = 3800
-                if len(report_text) > max_len:
-                    await send_message(str(user_id), "✅ Твоя диагностика:\n\n" + report_text[:max_len], None)
-                    await send_notification(str(user_id), report_text[max_len:max_len+max_len])
-                else:
-                    await send_message(str(user_id), "✅ Твоя диагностика:\n\n" + report_text, None)
-            await send_message(str(user_id),
-                "🔥 Ну как тебе?\n\n"
-                "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
-                "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.",
-                get_main_menu_keyboard())
-            save_user_state(str(user_id), STATE_MENU, {})
-        
-        elif text == "📄 В файле .txt":
-            report_text = data.get("generated_report")
-            title = data.get("report_title", "business")
-            if report_text:
-                filename = f"Diagnostic_{title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                filepath = REPORTS_DIR / filename
-                async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
-                    await f.write(report_text)
-                await send_file_message(
-                    str(user_id),
-                    "📄 Твоя бесплатная диагностика",
-                    str(filepath),
-                    "file"
-                )
-            await send_message(str(user_id),
-                "🔥 Ну как тебе?\n\n"
-                "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
-                "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.",
-                get_main_menu_keyboard())
-            save_user_state(str(user_id), STATE_MENU, {})
-        else:
-            await send_message(str(user_id), "Пожалуйста, выбери формат:", get_format_choice_keyboard(), one_time_keyboard=True)
-        return
-
     # Ожидание заявки на консультацию
     if state == STATE_WAITING_CALL:
         biz_data = get_business_data(str(user_id))
@@ -834,75 +904,6 @@ async def process_message(user_id: str, text: str):
         save_user_state(str(user_id), STATE_MENU, {})
         return
 
-    # Обработка "Оплатил"
-    if text.lower() in ["оплатил", "я оплатил", "оплатила", "я оплатила"]:
-        payment_id = get_pending_payment(str(user_id))
-        if payment_id:
-            status = await check_yookassa_payment(payment_id)
-            if status == "succeeded":
-                log_event(str(user_id), "payment_made", payment_id)
-                clear_pending_payment(str(user_id))
-                biz_data = get_business_data(str(user_id))
-                await send_notification(ADMIN_CHAT_ID,
-                    f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {user_id}\nБизнес: {biz_data['name'] if biz_data else 'не указан'}\nСумма: 490 ₽\n⏰ {format_moscow_time()}")
-                
-                report_status = get_report_status(str(user_id))
-                if report_status and report_status['status'] == 'ready' and report_status['file_path']:
-                    filepath = Path(report_status['file_path'])
-                    if filepath.exists():
-                        await send_file_message(
-                            str(user_id),
-                            "🎉 Ура! Твой план продаж готов!\n\n"
-                            "Я подготовила для тебя персональную стратегию с анализом конкурентов и пошаговым планом.",
-                            str(filepath),
-                            "file"
-                        )
-                        await send_message(str(user_id),
-                            "👇 Жми кнопку, получи мини-курс",
-                            get_post_download_keyboard())
-                    else:
-                        await send_message(str(user_id),
-                            "❌ Ой, файл не найден. Напиши мне в личные сообщения — поможем.",
-                            get_main_menu_keyboard())
-                else:
-                    await send_message(str(user_id),
-                        "✅ Оплата прошла, спасибо!\n\n"
-                        "План ещё готовится — обычно 5-10 минут. Я пришлю уведомление, как только всё будет готово.",
-                        get_main_menu_keyboard())
-            elif status == "pending":
-                await send_message(str(user_id),
-                    "⏳ Платёж ещё не подтверждён. Подожди немного и напиши «Оплатил» снова.\n\n"
-                    "Если деньги уже списались — напиши «Помощь».",
-                    get_main_menu_keyboard())
-            else:
-                await send_message(str(user_id),
-                    "❌ Платёж не найден или отменён. Попробуй оплатить снова.",
-                    get_main_menu_keyboard())
-        else:
-            await send_message(str(user_id),
-                "❌ Не могу найти информацию о платеже. Попробуй оплатить снова.",
-                get_main_menu_keyboard())
-        return
-
-    # Обработка "Подписаться на канал"
-    if text == "📢 Подписаться на канал":
-        await send_message(str(user_id),
-            "🔗 Подпишись на мой канал в MAX:\nhttps://max.ru/id781407988795_biz\n\n"
-            "После подписки напиши «Подписался», и я пришлю мини-курс!",
-            None)
-        return
-    
-    if text == "📚 Получить мини-курс":
-        await send_message(str(user_id),
-            "🎁 Мини-курс «3 шага к первой продаже»:\n\n"
-            "1. Определи свою целевую аудиторию\n"
-            "2. Создай оффер, от которого нельзя отказаться\n"
-            "3. Настрой простую воронку из 3 сообщений\n\n"
-            "Хочешь подробный разбор? Запишись на консультацию!",
-            get_main_menu_keyboard())
-        return
-
-    # Если ничего не подошло
     await send_message(str(user_id), "Используй кнопки меню или напиши /start", get_main_menu_keyboard())
 
 # === ЗАПУСК ===
@@ -920,7 +921,6 @@ app = FastAPI(title="Salesplan Bot for MAX", lifespan=lifespan)
 # === HEALTH CHECK ENDPOINT ===
 @app.get("/health")
 async def health():
-    """Проверка состояния приложения и переменных окружения"""
     return {
         "status": "alive",
         "timestamp": datetime.now().isoformat(),
