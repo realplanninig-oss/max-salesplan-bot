@@ -494,7 +494,7 @@ async def check_yookassa_payment(payment_id: str):
                 logger.error(f"Failed to check payment: {await resp.text()}")
                 return None
 
-# === КЛАВИАТУРЫ (с полем payload) ===
+# === КЛАВИАТУРЫ ===
 def get_main_menu_keyboard():
     """Главное меню"""
     return [
@@ -771,7 +771,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
     log_event(chat_id, f"callback_{callback_data}")
 
     if callback_data == CALLBACK_START_AUDIT:
-        logger.info(f"Processing START_AUDIT for user {chat_id}")
+        logger.info(f"✅ Processing START_AUDIT for user {chat_id}")
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {"answers": {}, "survey_step": 0})
         await send_callback_answer(callback_id,
             "Окей, погнали! 🚀\n\nНапиши название своего онлайн-бизнеса (как ты представляешь его клиентам):",
