@@ -1,34 +1,43 @@
-# File: main.py — максимально упрощенная версия (без клавиатур)
+# File: main.py — бот Salesplan для MAX (с РАБОЧИМИ reply-кнопками)
 
 import asyncio
 import logging
+import sqlite3
 import os
 import json
+import requests
 import traceback
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response, HTTPException
 import aiohttp
+import aiofiles
 import uvicorn
 
 load_dotenv()
 
 # === ДИАГНОСТИКА ===
 print("=" * 60)
-print("ENVIRONMENT VARIABLES CHECK - MAX Bot (NO KEYBOARD)")
+print("ENVIRONMENT VARIABLES CHECK - MAX Bot")
 print("=" * 60)
 print(f"MAX_BOT_TOKEN: {'✓ SET' if os.getenv('MAX_BOT_TOKEN') else '✗ MISSING'}")
 if os.getenv('MAX_BOT_TOKEN'):
     token = os.getenv('MAX_BOT_TOKEN')
     print(f"  Length: {len(token)} characters")
     print(f"  First 10 chars: {token[:10]}...")
+print(f"ADMIN_CHAT_ID: {os.getenv('ADMIN_CHAT_ID', '✗ MISSING')}")
+print(f"DEEPSEEK_API_KEY: {'✓ SET' if os.getenv('DEEPSEEK_API_KEY') else '✗ MISSING'}")
 print(f"PORT: {os.getenv('PORT', '8000')}")
 print("=" * 60)
 
 # === КОНФИГУРАЦИЯ ===
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
 if not MAX_BOT_TOKEN:
     raise RuntimeError("ERROR: MAX_BOT_TOKEN not found")
 
@@ -47,48 +56,112 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# === ОТПРАВКА СООБЩЕНИЙ (БЕЗ КЛАВИАТУР) ===
-async def send_message(chat_id: str, text: str):
-    """Отправка простого текстового сообщения - БЕЗ КЛАВИАТУРЫ"""
+# === КОМАНДЫ ===
+COMMAND_AUDIT = "📊 Бесплатный аудит"
+COMMAND_PREMIUM = "🔥 План продаж за 490 ₽"
+COMMAND_CONSULT = "👩‍💼 Бесплатная консультация"
+COMMAND_HELP = "❓ Помощь"
+
+# === ОТПРАВКА СООБЩЕНИЙ С КЛАВИАТУРОЙ ===
+async def send_message_with_keyboard(chat_id: str, text: str, buttons: list):
+    """Отправка сообщения с reply-клавиатурой"""
+    url = f"{MAX_API_URL}/messages?user_id={chat_id}"
+    payload = {
+        "text": text,
+        "attachments": [
+            {
+                "type": "reply_keyboard",
+                "payload": {
+                    "buttons": buttons,
+                    "resize": True,
+                    "one_time": False
+                }
+            }
+        ]
+    }
+    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
+    
+    logger.info(f"Sending with keyboard to {chat_id}")
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            response_text = await resp.text()
+            if resp.status != 200:
+                logger.error(f"send_message failed: {resp.status} - {response_text}")
+            return {"status": resp.status, "body": response_text}
+
+async def send_simple_message(chat_id: str, text: str):
+    """Отправка простого текстового сообщения без клавиатуры"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     
-    logger.info(f"Sending to {url}")
-    logger.info(f"Payload: {json.dumps(payload, ensure_ascii=False)}")
-    
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
-            response_text = await resp.text()
-            logger.info(f"Response status: {resp.status}")
-            logger.info(f"Response body: {response_text}")
-            
             if resp.status != 200:
-                logger.error(f"send_message failed: {resp.status} - {response_text}")
-            return {"status": resp.status, "body": response_text}
+                error_text = await resp.text()
+                logger.error(f"send_simple_message failed: {resp.status} - {error_text}")
+            return {"status": resp.status}
 
 # === ОБРАБОТЧИК ===
 async def process_message(user_id: str, text: str):
     logger.info(f"Process message: {user_id} -> {text}")
     
     if text == "/start":
-        await send_message(str(user_id), 
+        # Отправляем сообщение с клавиатурой
+        buttons = [
+            [{"text": COMMAND_AUDIT}],
+            [{"text": COMMAND_PREMIUM}],
+            [{"text": COMMAND_CONSULT}],
+            [{"text": COMMAND_HELP}]
+        ]
+        await send_message_with_keyboard(
+            str(user_id),
             "Привет! Я Вероника, продюсер экспертов.\n\n"
-            "Я пока не умею показывать кнопки, но базовая отправка работает!\n\n"
-            "Проблема с клавиатурами решается. Подожди немного, я доделываю бота.")
+            "Контент вроде делаешь, подписчики есть, а денег нет? Знакомо.\n\n"
+            "Давай сделаем бесплатный аудит твоего канала — 2 минуты, и узнаешь, что теряешь.\n\n"
+            "👇 Нажми на кнопку:",
+            buttons
+        )
+    elif text == COMMAND_AUDIT:
+        await send_simple_message(str(user_id), 
+            "Окей, погнали! 🚀\n\nНапиши название своего онлайн-бизнеса:")
+    elif text == COMMAND_PREMIUM:
+        await send_simple_message(str(user_id), 
+            "🔥 План продаж за 490 ₽\n\nСкоро здесь будет оплата и генерация плана.")
+    elif text == COMMAND_CONSULT:
+        await send_simple_message(str(user_id), 
+            "👩‍💼 Бесплатная консультация\n\nНапиши в одном сообщении:\n"
+            "🔗 Ссылку на твой бизнес\n"
+            "👤 Твой username\n"
+            "🕐 Удобное время для звонка")
+    elif text == COMMAND_HELP:
+        buttons = [
+            [{"text": COMMAND_AUDIT}],
+            [{"text": COMMAND_PREMIUM}],
+            [{"text": COMMAND_CONSULT}]
+        ]
+        await send_message_with_keyboard(
+            str(user_id),
+            "❓ Помощь\n\nДоступные команды:\n"
+            "• 📊 Бесплатный аудит\n"
+            "• 🔥 План продаж за 490 ₽\n"
+            "• 👩‍💼 Бесплатная консультация\n\n"
+            "👇 Выбери действие:",
+            buttons
+        )
     else:
-        await send_message(str(user_id), f"Ты написал: {text}\n\nСкоро здесь будут кнопки!")
+        await send_simple_message(str(user_id), f"Ты написал: {text}\n\nИспользуй /start для начала.")
 
 # === ЗАПУСК ===
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Bot started (no keyboard version)")
+    logger.info("Bot started")
     yield
     logger.info("Bot stopped")
 
-app = FastAPI(title="MAX Bot No Keyboard", lifespan=lifespan)
+app = FastAPI(title="MAX Bot", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
@@ -96,14 +169,13 @@ async def health():
 
 @app.get("/")
 async def root():
-    return {"status": "MAX Bot is running", "version": "no-keyboard"}
+    return {"status": "MAX Bot is running", "version": "3.0"}
 
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
         payload = await request.json()
-        logger.info(f"Webhook received")
-
+        
         if "message" in payload:
             msg = payload["message"]
             user_id = msg.get("sender", {}).get("user_id")
