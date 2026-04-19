@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (на основе реальных рабочих примеров)
+# File: main.py — бот Salesplan для MAX (финальная рабочая версия)
 
 import asyncio
 import logging
@@ -159,6 +159,13 @@ def save_form(user_id: str, answers: dict):
     conn.commit()
     conn.close()
 
+def get_form(user_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("SELECT q1, q2, q3, q4, q5 FROM forms WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return {"q1": row[0], "q2": row[1], "q3": row[2], "q4": row[3], "q5": row[4]} if row else None
+
 def save_consultation(user_id: str, message: str):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("INSERT INTO consultations (user_id, message) VALUES (?, ?)", (user_id, message))
@@ -167,6 +174,7 @@ def save_consultation(user_id: str, message: str):
 
 # === ОТПРАВКА СООБЩЕНИЙ ===
 async def send_message(chat_id: str, text: str, buttons: list = None):
+    """Отправка сообщения с inline-клавиатурой"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
     
@@ -190,9 +198,11 @@ async def send_message(chat_id: str, text: str, buttons: list = None):
             return resp.status
 
 async def send_simple_message(chat_id: str, text: str):
+    """Отправка простого текстового сообщения"""
     return await send_message(chat_id, text, None)
 
 async def answer_callback(callback_id: str, text: str):
+    """Ответ на callback (уведомление при нажатии кнопки)"""
     url = f"{MAX_API_URL}/answers?callback_id={callback_id}"
     payload = {"message": {"text": text}}
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
@@ -204,7 +214,8 @@ async def answer_callback(callback_id: str, text: str):
             return resp.status
 
 async def send_file_message(chat_id: str, text: str, file_path: str):
-    # Загрузка файла
+    """Отправка файла"""
+    # 1. Загружаем файл
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{MAX_API_URL}/uploads?type=file",
@@ -216,6 +227,7 @@ async def send_file_message(chat_id: str, text: str, file_path: str):
             data = await resp.json()
             upload_url = data.get("url")
     
+    # 2. Отправляем файл по полученному URL
     async with aiohttp.ClientSession() as session:
         with open(file_path, 'rb') as f:
             form_data = aiohttp.FormData()
@@ -227,7 +239,7 @@ async def send_file_message(chat_id: str, text: str, file_path: str):
                 result = await resp.json()
                 token = result.get("token")
     
-    # Отправка файла
+    # 3. Отправляем сообщение с прикреплённым файлом
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {
         "text": text,
@@ -238,55 +250,56 @@ async def send_file_message(chat_id: str, text: str, file_path: str):
         async with session.post(url, json=payload, headers=headers) as resp:
             logger.info(f"File sent: {resp.status}")
 
-# === КНОПКИ (ПРАВИЛЬНЫЙ ФОРМАТ ИЗ РЕАЛЬНЫХ ДАННЫХ) ===
+# === КНОПКИ (правильный формат из Go-библиотеки) ===
 def get_main_menu_buttons():
-    """Формат кнопок из реальных рабочих примеров MAX API"""
+    """Главное меню"""
     return [
         [
             {
-                "payload": "audit",
+                "type": "callback",
                 "text": "📊 Бесплатный аудит",
-                "intent": "default",
-                "type": "callback"
+                "payload": "audit",
+                "intent": "default"
             }
         ],
         [
             {
-                "payload": "premium",
+                "type": "callback",
                 "text": "🔥 План продаж за 490 ₽",
-                "intent": "default",
-                "type": "callback"
+                "payload": "premium",
+                "intent": "default"
             }
         ],
         [
             {
-                "payload": "consult",
+                "type": "callback",
                 "text": "👩‍💼 Бесплатная консультация",
-                "intent": "default",
-                "type": "callback"
+                "payload": "consult",
+                "intent": "default"
             }
         ],
         [
             {
-                "payload": "help",
+                "type": "callback",
                 "text": "❓ Помощь",
-                "intent": "default",
-                "type": "callback"
+                "payload": "help",
+                "intent": "default"
             }
         ]
     ]
 
 def get_survey_buttons(step: int):
+    """Кнопки для опросника"""
     if step >= len(SURVEY_QUESTIONS):
         return None
     buttons = []
     for option in SURVEY_QUESTIONS[step]["options"]:
         buttons.append([
             {
-                "payload": f"survey_{step}_{option}",
+                "type": "callback",
                 "text": option,
-                "intent": "default",
-                "type": "callback"
+                "payload": f"survey_{step}_{option}",
+                "intent": "default"
             }
         ])
     return buttons
@@ -337,8 +350,9 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
         logger.error(f"DeepSeek failed: {e}")
         return None
 
-# === ОБРАБОТЧИК ===
+# === ОБРАБОТЧИКИ ===
 async def process_callback(user_id: str, callback_id: str, payload: str):
+    """Обработка нажатия на кнопку"""
     logger.info(f"🔘 Callback: user={user_id}, payload={payload}")
     
     if payload == "audit":
@@ -351,7 +365,7 @@ async def process_callback(user_id: str, callback_id: str, payload: str):
         biz = get_business_data(str(user_id))
         form = get_form(str(user_id))
         if not biz or not form:
-            await send_simple_message(str(user_id), "Сначала нужно пройти бесплатный аудит! Нажми /start")
+            await send_simple_message(str(user_id), "Сначала нужно пройти бесплатный аудит! Напиши /start")
         else:
             await send_simple_message(str(user_id), "🔥 План продаж за 490 ₽\n\nСкоро здесь будет оплата через ЮKassa.")
     
@@ -398,7 +412,7 @@ async def process_callback(user_id: str, callback_id: str, payload: str):
                             await f.write(report)
                         await send_file_message(str(user_id), "✅ Твоя диагностика готова!", str(filepath))
                         await send_message(str(user_id), 
-                            "🔥 Ну как тебе? Хочешь полный план продаж за 490 ₽? Нажми /start",
+                            "🔥 Ну как тебе? Хочешь полный план продаж за 490 ₽? Напиши /start",
                             get_main_menu_buttons())
                     else:
                         await send_simple_message(str(user_id), "⚠️ Ошибка генерации. Попробуй позже /start")
@@ -407,6 +421,7 @@ async def process_callback(user_id: str, callback_id: str, payload: str):
         await answer_callback(callback_id, "❌ Неизвестная команда")
 
 async def process_message(user_id: str, text: str):
+    """Обработка текстовых сообщений"""
     logger.info(f"📨 Message: {user_id} -> {text}")
     state, data = get_user_state(str(user_id))
     
@@ -436,10 +451,9 @@ async def process_message(user_id: str, text: str):
         save_consultation(str(user_id), text)
         save_user_state(str(user_id), STATE_MENU, {})
         if ADMIN_CHAT_ID:
-            await send_simple_message(ADMIN_CHAT_ID, f"📞 НОВАЯ ЗАЯВКА НА КОНСУЛЬТАЦИЮ!\n\nПользователь: {user_id}\nСообщение: {text}")
+            await send_simple_message(ADMIN_CHAT_ID, f"📞 Новая заявка на консультацию!\nПользователь: {user_id}\nСообщение: {text}")
         await send_message(str(user_id), 
-            "✅ Заявка принята! Я свяжусь с тобой в ближайшее время.\n\n"
-            "А пока подпишись на мой канал: https://max.ru/id781407988795_biz",
+            "✅ Заявка принята! Я свяжусь с тобой в ближайшее время.\n\nА пока подпишись на мой канал: https://max.ru/id781407988795_biz",
             get_main_menu_buttons())
         return
     
@@ -468,7 +482,7 @@ async def webhook(request: Request):
     try:
         body = await request.json()
         
-        # Обработка обычного сообщения
+        # Обработка обычного сообщения (message_created)
         if "message" in body and "callback" not in body:
             msg = body["message"]
             user_id = msg.get("sender", {}).get("user_id")
@@ -476,12 +490,12 @@ async def webhook(request: Request):
             if user_id and text:
                 await process_message(str(user_id), text)
         
-        # Обработка callback от кнопки (update_type: message_callback)
+        # Обработка callback от кнопки (message_callback)
         elif "callback" in body:
             cb = body["callback"]
             user_id = cb.get("user", {}).get("id")
             callback_id = cb.get("callback_id")
-            payload = cb.get("payload")  # ключевое поле!
+            payload = cb.get("payload")
             logger.info(f"🔘 Callback received: user={user_id}, payload={payload}")
             if user_id and callback_id and payload:
                 await process_callback(str(user_id), str(callback_id), payload)
