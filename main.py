@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (финальная рабочая версия)
+# File: main.py — бот Salesplan для MAX (с подробным логированием)
 
 import asyncio
 import logging
@@ -190,11 +190,17 @@ async def send_message(chat_id: str, text: str, buttons: list = None):
     
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     
+    logger.info(f"📤 SENDING to {chat_id}")
+    logger.info(f"📤 URL: {url}")
+    logger.info(f"📤 Payload: {json.dumps(payload, ensure_ascii=False)}")
+    
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
+            response_text = await resp.text()
+            logger.info(f"📥 Response status: {resp.status}")
+            logger.info(f"📥 Response body: {response_text}")
             if resp.status != 200:
-                error_text = await resp.text()
-                logger.error(f"Send failed: {resp.status} - {error_text}")
+                logger.error(f"Send failed: {resp.status} - {response_text}")
             return resp.status
 
 async def send_simple_message(chat_id: str, text: str):
@@ -207,10 +213,13 @@ async def answer_callback(callback_id: str, text: str):
     payload = {"message": {"text": text}}
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     
+    logger.info(f"📤 Answering callback: {callback_id}")
+    logger.info(f"📤 Payload: {json.dumps(payload, ensure_ascii=False)}")
+    
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status != 200:
-                logger.error(f"Answer callback failed: {resp.status}")
+            response_text = await resp.text()
+            logger.info(f"📥 Answer response: {resp.status} - {response_text}")
             return resp.status
 
 async def send_file_message(chat_id: str, text: str, file_path: str):
@@ -481,12 +490,14 @@ async def health():
 async def webhook(request: Request):
     try:
         body = await request.json()
+        logger.info(f"📥 FULL BODY: {json.dumps(body, ensure_ascii=False)}")
         
         # Обработка обычного сообщения (message_created)
         if "message" in body and "callback" not in body:
             msg = body["message"]
             user_id = msg.get("sender", {}).get("user_id")
             text = msg.get("body", {}).get("text")
+            logger.info(f"📨 Message from {user_id}: {text}")
             if user_id and text:
                 await process_message(str(user_id), text)
         
@@ -496,7 +507,7 @@ async def webhook(request: Request):
             user_id = cb.get("user", {}).get("id")
             callback_id = cb.get("callback_id")
             payload = cb.get("payload")
-            logger.info(f"🔘 Callback received: user={user_id}, payload={payload}")
+            logger.info(f"🔘 Callback: user={user_id}, callback_id={callback_id}, payload={payload}")
             if user_id and callback_id and payload:
                 await process_callback(str(user_id), str(callback_id), payload)
 
