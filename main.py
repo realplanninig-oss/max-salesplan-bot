@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (с подробным логированием)
+# File: main.py — бот Salesplan для MAX (финальная рабочая версия)
 
 import asyncio
 import logging
@@ -190,17 +190,11 @@ async def send_message(chat_id: str, text: str, buttons: list = None):
     
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     
-    logger.info(f"📤 SENDING to {chat_id}")
-    logger.info(f"📤 URL: {url}")
-    logger.info(f"📤 Payload: {json.dumps(payload, ensure_ascii=False)}")
-    
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
-            response_text = await resp.text()
-            logger.info(f"📥 Response status: {resp.status}")
-            logger.info(f"📥 Response body: {response_text}")
             if resp.status != 200:
-                logger.error(f"Send failed: {resp.status} - {response_text}")
+                error_text = await resp.text()
+                logger.error(f"Send failed: {resp.status} - {error_text}")
             return resp.status
 
 async def send_simple_message(chat_id: str, text: str):
@@ -213,13 +207,10 @@ async def answer_callback(callback_id: str, text: str):
     payload = {"message": {"text": text}}
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     
-    logger.info(f"📤 Answering callback: {callback_id}")
-    logger.info(f"📤 Payload: {json.dumps(payload, ensure_ascii=False)}")
-    
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
-            response_text = await resp.text()
-            logger.info(f"📥 Answer response: {resp.status} - {response_text}")
+            if resp.status != 200:
+                logger.error(f"Answer callback failed: {resp.status}")
             return resp.status
 
 async def send_file_message(chat_id: str, text: str, file_path: str):
@@ -443,6 +434,36 @@ async def process_message(user_id: str, text: str):
             get_main_menu_buttons())
         return
     
+    # Обработка текстовых команд (fallback для кнопок)
+    cmd = text.lower().strip()
+    
+    if state == STATE_MENU:
+        if cmd == "бесплатный аудит" or cmd == "аудит" or text == "📊 Бесплатный аудит":
+            save_user_state(str(user_id), "awaiting_business_name", {"answers": {}, "survey_step": 0})
+            await send_simple_message(str(user_id), "Окей, погнали! 🚀\n\nНапиши название своего онлайн-бизнеса:")
+            return
+        
+        elif cmd == "план продаж" or cmd == "план" or text == "🔥 План продаж за 490 ₽":
+            biz = get_business_data(str(user_id))
+            form = get_form(str(user_id))
+            if not biz or not form:
+                await send_simple_message(str(user_id), "Сначала нужно пройти бесплатный аудит! Напиши «бесплатный аудит»")
+            else:
+                await send_simple_message(str(user_id), "🔥 План продаж за 490 ₽\n\nСкоро здесь будет оплата через ЮKassa.")
+            return
+        
+        elif cmd == "консультация" or text == "👩‍💼 Бесплатная консультация":
+            save_user_state(str(user_id), "waiting_call", {})
+            await send_simple_message(str(user_id), "Напиши в одном сообщении:\n🔗 Ссылку на бизнес\n👤 Твой username\n🕐 Удобное время для звонка")
+            return
+        
+        elif cmd == "помощь" or text == "❓ Помощь":
+            await send_message(str(user_id), 
+                "Доступные команды:\n• бесплатный аудит\n• план продаж\n• консультация\n• помощь\n\nИли нажми на кнопку",
+                get_main_menu_buttons())
+            return
+    
+    # Обработка состояний
     if state == "awaiting_business_name":
         save_user_state(str(user_id), "awaiting_business_description", {"business_name": text})
         await send_simple_message(str(user_id), "Отлично! Теперь напиши краткое описание бизнеса:")
@@ -467,7 +488,7 @@ async def process_message(user_id: str, text: str):
         return
     
     if state == STATE_MENU:
-        await send_message(str(user_id), "Используй /start или нажми на кнопку", get_main_menu_buttons())
+        await send_message(str(user_id), "Напиши /start для начала или используй команды:\nбесплатный аудит\nплан продаж\nконсультация", get_main_menu_buttons())
     else:
         await send_message(str(user_id), "Напиши /start для начала", get_main_menu_buttons())
 
@@ -504,12 +525,15 @@ async def webhook(request: Request):
         # Обработка callback от кнопки (message_callback)
         elif "callback" in body:
             cb = body["callback"]
-            user_id = cb.get("user", {}).get("id")
+            # ИСПРАВЛЕНО: правильный путь для user_id
+            user_id = cb.get("user", {}).get("user_id")
             callback_id = cb.get("callback_id")
             payload = cb.get("payload")
             logger.info(f"🔘 Callback: user={user_id}, callback_id={callback_id}, payload={payload}")
             if user_id and callback_id and payload:
                 await process_callback(str(user_id), str(callback_id), payload)
+            else:
+                logger.warning(f"⚠️ Missing data: user_id={user_id}, callback_id={callback_id}, payload={payload}")
 
         return Response(status_code=200)
     except Exception as e:
