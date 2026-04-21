@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (финальная версия)
+# File: main.py — бот Salesplan для MAX (исправленная версия)
 
 import asyncio
 import logging
@@ -57,15 +57,14 @@ STATE_AWAITING_BUSINESS_NAME = "awaiting_business_name"
 STATE_AWAITING_BUSINESS_DESCRIPTION = "awaiting_business_description"
 STATE_SURVEY = "survey"
 STATE_WAITING_CALL = "waiting_call"
+STATE_WAITING_PAYMENT = "waiting_payment"
 
 # === CALLBACK DATA ===
 CALLBACK_START_AUDIT = "start_audit"
 CALLBACK_MY_PREMIUM = "my_premium"
-CALLBACK_I_PAID = "i_paid"
 CALLBACK_BOOK_CALL = "book_call"
 CALLBACK_DOWNLOAD_REPORT = "download_report"
 CALLBACK_SEND_AS_TEXT = "send_as_text"
-CALLBACK_SEND_AS_FILE = "send_as_file"
 CALLBACK_HELP = "help"
 
 # === ОПРОСНИК ===
@@ -314,17 +313,6 @@ def clear_pending_payment(user_id: str):
     conn.commit()
     conn.close()
 
-def save_consent(user_id: str, consent_type: str, ip: str = None, user_agent: str = None):
-    """Сохраняет согласие пользователя"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        INSERT INTO user_consents (user_id, consent_type, ip, user_agent)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, consent_type, ip, user_agent[:500] if user_agent else None))
-    conn.commit()
-    conn.close()
-    logger.info(f"Consent saved: user_id={user_id}, type={consent_type}")
-
 def get_moscow_time():
     return datetime.utcnow() + timedelta(hours=3)
 
@@ -338,7 +326,6 @@ def log_event(user_id: str, event_type: str, event_data: str = None):
 
 # === ОТПРАВКА СООБЩЕНИЙ ===
 async def send_message(chat_id: str, text: str, keyboard: list = None):
-    """Отправка сообщения с кнопками"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
     if keyboard:
@@ -359,7 +346,6 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
             return await resp.json()
 
 async def send_callback_answer(callback_id: str, text: str, keyboard: list = None):
-    """Ответ на callback (обновление сообщения после нажатия кнопки)"""
     url = f"{MAX_API_URL}/answers?callback_id={callback_id}"
     payload = {"message": {"text": text}}
     if keyboard:
@@ -380,7 +366,6 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
             return await resp.json()
 
 async def send_notification(chat_id: str, text: str):
-    """Одноразовое уведомление"""
     url = f"{MAX_API_URL}/messages?user_id={chat_id}"
     payload = {"text": text}
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
@@ -442,10 +427,8 @@ async def send_file_message(chat_id: str, text: str, file_path: str, file_type: 
 
 # === ПЛАТЕЖИ ===
 async def create_yookassa_payment(amount: int, description: str, user_id: str):
-    # Проверка наличия ключей
     if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY or YKASSA_SECRET_KEY == "test":
-        logger.warning(f"YooKassa credentials missing or in test mode. SHOP_ID={YKASSA_SHOP_ID}, SECRET_KEY={'SET' if YKASSA_SECRET_KEY else 'MISSING'}")
-        # Для тестового режима возвращаем мок-ссылку
+        logger.warning(f"YooKassa credentials missing or in test mode. Using mock payment")
         if YKASSA_TEST_MODE:
             logger.info(f"Using mock payment for user {user_id}")
             return {
@@ -493,7 +476,6 @@ async def create_yookassa_payment(amount: int, description: str, user_id: str):
                 return None
 
 async def check_yookassa_payment(payment_id: str):
-    # Для мок-платежа
     if payment_id.startswith("mock_"):
         return "succeeded"
     
@@ -515,33 +497,12 @@ async def check_yookassa_payment(payment_id: str):
 
 # === КЛАВИАТУРЫ ===
 def get_main_menu_keyboard():
-    """Главное меню"""
     return [
         [
             {
                 "type": "callback",
                 "text": "📊 Бесплатный аудит",
                 "payload": CALLBACK_START_AUDIT,
-                "intent": "default"
-            }
-        ]
-    ]
-
-def get_after_diagnostic_keyboard():
-    return [
-        [
-            {
-                "type": "callback",
-                "text": "🔥 План продаж за 490 ₽",
-                "payload": CALLBACK_MY_PREMIUM,
-                "intent": "default"
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "👩‍💼 Бесплатная консультация",
-                "payload": CALLBACK_BOOK_CALL,
                 "intent": "default"
             }
         ]
@@ -572,14 +533,6 @@ def get_format_choice_keyboard():
                 "payload": CALLBACK_SEND_AS_TEXT,
                 "intent": "default"
             }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "📄 В файле .txt",
-                "payload": CALLBACK_SEND_AS_FILE,
-                "intent": "default"
-            }
         ]
     ]
 
@@ -591,31 +544,27 @@ def get_payment_keyboard(confirmation_url: str):
                 "text": "💳 Оплатить 490 ₽",
                 "url": confirmation_url
             }
-        ],
+        ]
+    ]
+
+def get_download_keyboard():
+    return [
         [
             {
                 "type": "callback",
-                "text": "✅ Я оплатил(а)",
-                "payload": CALLBACK_I_PAID,
-                "intent": "default"
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "❓ Помощь",
-                "payload": CALLBACK_HELP,
+                "text": "📥 Скачать план продаж",
+                "payload": CALLBACK_DOWNLOAD_REPORT,
                 "intent": "default"
             }
         ]
     ]
 
-def get_post_download_keyboard():
+def get_after_download_keyboard():
     return [
         [
             {
                 "type": "callback",
-                "text": "👩‍💼 Разобрать план (30 мин)",
+                "text": "👩‍💼 Разобрать план (30 мин бесплатно)",
                 "payload": CALLBACK_BOOK_CALL,
                 "intent": "default"
             }
@@ -745,19 +694,33 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
         logger.error(f"Premium report error: {e}")
         update_report_status(report_id, 'failed')
 
+async def send_analysis_animation(chat_id: str):
+    """Отправляет анимацию процесса анализа"""
+    steps = [
+        "🔍 Анализируем нишу — кто ваши клиенты и где они тусуются",
+        "📊 Изучаем целевую аудиторию — что они хотят на самом деле",
+        "🎯 Ищем точки роста — где вы теряете деньги",
+        "📝 Формируем рекомендации — что делать прямо сейчас"
+    ]
+    
+    for i, step in enumerate(steps):
+        await send_message(chat_id, f"🔄 *{step}*\n\n⏳ {i+1}/4", None)
+        await asyncio.sleep(8)
+    
+    await send_message(chat_id, "✨ Готово! Анализ завершён.", None)
+
 # === ОБРАБОТЧИКИ ===
 async def process_callback(chat_id: str, callback_id: str, callback_data: str):
     state, data = get_user_state(chat_id)
     log_event(chat_id, f"callback_{callback_data}")
     
-    # Инициализация данных, если их нет
     if data is None:
         data = {}
 
     if callback_data == CALLBACK_START_AUDIT:
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {"answers": {}, "survey_step": 0})
         await send_callback_answer(callback_id,
-            "Окей, погнали! 🚀\n\nНапиши название своего онлайн-бизнеса (как ты представляешь его клиентам):",
+            f"Окей, погнали! 🚀\n\n@{chat_id}, напиши название своего онлайн-бизнеса (как ты представляешь его клиентам):",
             None)
         return
 
@@ -766,7 +729,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         form_data = get_form(chat_id)
         if not biz_data or not form_data:
             await send_callback_answer(callback_id,
-                "Ой, стоп! Сначала нужно пройти бесплатную диагностику, чтобы я поняла, про что твой бизнес.\n\n"
+                "Ой, стоп! Сначала нужно пройти бесплатную диагностику.\n\n"
                 "Это быстро — 2 минуты, честно 👇",
                 get_main_menu_keyboard())
             return
@@ -774,18 +737,16 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         payment = await create_yookassa_payment(490, "План продаж Salesplan", chat_id)
         if payment and payment.get("confirmation_url"):
             save_pending_payment(chat_id, payment["payment_id"])
+            save_user_state(chat_id, STATE_WAITING_PAYMENT, {"payment_id": payment["payment_id"]})
+            
             await send_callback_answer(callback_id,
-                "🔍 Так, уже запускаю генерацию твоего плана продаж... Обычно это занимает 5-10 минут.\n\n"
-                "А пока план готовится, давай честно.\n\n"
-                "Ты получила бесплатную диагностику — и что дальше? \n"
-                "Часто бывает: информации много, а внедрить не получается. Руки не доходят, непонятно с чего начать.\n\n"
-                "Я это знаю не понаслышке — 8 лет с экспертами работаю.\n\n"
-                "Поэтому я — Вероника — сделала план продаж, который:\n"
-                "✅ Не теория, а конкретные шаги под ТВОЙ бизнес\n"
-                "✅ С разбором конкурентов — увидишь, как их обойти\n"
-                "✅ С готовыми связками, которые уже принесли деньги моим клиентам\n\n"
-                "490 рублей — это смешная цена за готовую стратегию. Серьёзно.\n\n"
-                "👇 Оплати по кнопке — и план сразу станет доступен для скачивания",
+                f"🔍 Запускаю генерацию плана продаж... 1-2 минуты — и всё готово.\n\n"
+                f"🔥 Твой план будет содержать:\n"
+                f"• Разбор 5 конкурентов\n"
+                f"• Анализ ЦА\n"
+                f"• Готовую воронку\n"
+                f"• План действий на месяц\n\n"
+                f"👇 Оплати 490 ₽ — и сразу скачаешь результат",
                 get_payment_keyboard(payment["confirmation_url"]))
         else:
             await send_callback_answer(callback_id,
@@ -797,51 +758,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         asyncio.create_task(generate_premium_report(chat_id, biz_data["name"], biz_data["description"], form_data, report_id))
         return
 
-    if callback_data == CALLBACK_I_PAID:
-        payment_id = get_pending_payment(chat_id)
-        if payment_id:
-            status = await check_yookassa_payment(payment_id)
-            if status == "succeeded":
-                log_event(chat_id, "payment_made", payment_id)
-                clear_pending_payment(chat_id)
-                biz_data = get_business_data(chat_id)
-                await send_notification(ADMIN_CHAT_ID,
-                    f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {chat_id}\nБизнес: {biz_data['name'] if biz_data else 'не указан'}\nСумма: 490 ₽\n⏰ {format_moscow_time()}")
-                report_status = get_report_status(chat_id)
-                if report_status and report_status['status'] == 'ready':
-                    download_keyboard = [[
-                        {
-                            "type": "callback",
-                            "text": "📥 Скачать план",
-                            "payload": CALLBACK_DOWNLOAD_REPORT,
-                            "intent": "default"
-                        }
-                    ]]
-                    await send_callback_answer(callback_id,
-                        "🎉 Ура! Твой план продаж готов!\n\n"
-                        "Я подготовила для тебя персональную стратегию с анализом конкурентов и пошаговым планом.\n\n"
-                        "👇 Жми кнопку ниже — и забирай результат",
-                        download_keyboard)
-                else:
-                    await send_callback_answer(callback_id,
-                        "✅ Оплата прошла, спасибо!\n\n"
-                        "План ещё готовится — обычно 5-10 минут. Я пришлю уведомление, как только всё будет готово.",
-                        get_main_menu_keyboard())
-            elif status == "pending":
-                await send_callback_answer(callback_id,
-                    "⏳ Платёж ещё не подтверждён. Подожди немного и нажми «Я оплатил(а)» снова.\n\n"
-                    "Если деньги уже списались — нажми «Помощь», я проверю вручную.",
-                    get_main_menu_keyboard())
-            else:
-                await send_callback_answer(callback_id,
-                    "❌ Платёж не найден или отменён. Попробуй оплатить снова.",
-                    get_main_menu_keyboard())
-        else:
-            await send_callback_answer(callback_id,
-                "❌ Не могу найти информацию о платеже. Попробуй оплатить снова.",
-                get_main_menu_keyboard())
-        return
-
     if callback_data == CALLBACK_DOWNLOAD_REPORT:
         report_status = get_report_status(chat_id)
         if report_status and report_status['status'] == 'ready' and report_status['file_path']:
@@ -849,26 +765,30 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             if filepath.exists():
                 await send_file_message(
                     chat_id,
-                    "📄 Держи свой план продаж",
+                    "📄 Держи свой план продаж!",
                     str(filepath),
                     "file"
                 )
-                await send_notification(chat_id,
-                    "🔥 Ну что, прочитала план?\n\n"
-                    "Давай начистоту — ты сможешь всё это внедрить сама?\n"
-                    "Я ж знаю эту боль: информации много, а результата нет.\n\n"
-                    "Поэтому я предлагаю:\n"
-                    "✅ Приходи на 30-минутный разбор плана\n"
-                    "✅ Я найду ТВОЁ одно действие, которое принесёт деньги прямо сейчас")
-                await send_message(chat_id, "👇 Жми кнопку, запишись на разбор", get_post_download_keyboard())
+                await asyncio.sleep(2)
+                await send_message(chat_id,
+                    "🔥 Ну что, изучила план?\n\n"
+                    "Давай честно: ты сможешь всё это внедрить сама?\n\n"
+                    "Я знаю эту боль — информации много, а результата нет.\n\n"
+                    "Поэтому я предлагаю БЕСПЛАТНЫЙ 30-минутный разбор твоего плана.\n\n"
+                    "За 30 минут я:\n"
+                    "✅ Найду ТВОЁ одно действие, которое принесёт деньги прямо сейчас\n"
+                    "✅ Покажу, где теряешь клиентов\n"
+                    "✅ Дам конкретный план на неделю\n\n"
+                    "👇 Жми кнопку — забронируй время",
+                    get_after_download_keyboard())
             else:
                 await send_callback_answer(callback_id,
-                    "❌ Ой, файл не найден. Напиши мне в личные сообщения — поможем.",
+                    "❌ Файл не найден. Напиши мне — поможем.",
                     get_main_menu_keyboard())
         else:
             await send_callback_answer(callback_id,
-                "⏳ План ещё готовится. Обычно 5-10 минут.\n\nЕсли прошло больше — нажми кнопку помощи 👇",
-                get_main_menu_keyboard())
+                "⏳ План ещё готовится. Обычно 1-2 минуты.\n\nКак будет готов — я пришлю уведомление.",
+                None)
         return
 
     if callback_data == CALLBACK_HELP:
@@ -882,23 +802,19 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         save_user_state(chat_id, STATE_WAITING_CALL, {})
         await send_callback_answer(callback_id,
             "Привет! Я Вероника Макаревич.\n\n"
-            "8 лет назад я начинала с нуля, а сегодня у моих клиентов запуски на 2 млн за 2 недели.\n\n"
-            "Я помогаю экспертам перестать мучиться и начать просто продавать.\n\n"
-            "Посмотри на моих ребят:\n"
-            "🔥 Психолог Елена — 7 клиентов за 2 недели, доход с 0 до 180 000 ₽\n"
-            "🔥 Мастер Фен Шуй Анна — первый запуск 200 000 ₽ при рекламе 30 000 ₽\n"
-            "🔥 Эксперт по китайскому — 120 000 ₽ за 2 недели вообще без блога\n"
-            "🔥 Онлайн-школа — 2 млн за 2 недели через марафон\n\n"
-            "Почему я предлагаю тебе 30 минут бесплатно?\n\n"
-            "Потому что за 30 минут я:\n"
+            "8 лет помогаю экспертам запускать продажи.\n\n"
+            "Кейсы моих клиентов:\n"
+            "🔥 Психолог Елена — 7 клиентов за 2 недели, +180 000 ₽\n"
+            "🔥 Мастер Фен Шуй — запуск 200 000 ₽\n\n"
+            "Почему я предлагаю 30 минут бесплатно?\n\n"
+            "За это время я:\n"
             "✅ Найду твою точку роста\n"
             "✅ Покажу, почему сейчас не продаётся\n"
             "✅ Дам конкретный план на неделю\n\n"
             "Напиши в одном сообщении:\n"
-            "🔗 Ссылку на твой бизнес (канал, сайт)\n"
+            "🔗 Ссылку на бизнес\n"
             "👤 Твой username\n"
-            "🕐 Удобное время для созвона (по Москве)\n\n"
-            "👇 Жду",
+            "🕐 Удобное время\n\n👇 Жду",
             None)
         return
 
@@ -909,7 +825,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                          Q5_YES, Q5_NO, Q5_PROGRESS]:
         _, user_data = get_user_state(chat_id)
         
-        # Инициализация, если нет данных
         if user_data is None:
             user_data = {}
         if "answers" not in user_data:
@@ -935,24 +850,29 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 biz_data = get_business_data(chat_id)
                 if not biz_data:
                     await send_callback_answer(callback_id,
-                        "❌ Ошибка: данные бизнеса не найдены. Начни заново.",
+                        "❌ Ошибка. Начни заново.",
                         get_main_menu_keyboard())
                     save_user_state(chat_id, STATE_MENU, {})
                     return
 
                 await send_callback_answer(callback_id,
-                    "🔍 Запускаю диагностику... Это займёт до 60 секунд.",
+                    "🔍 Запускаю анализ...",
                     None)
+                
+                # Анимация анализа
+                await send_analysis_animation(chat_id)
+                
                 report_text = await call_deepseek_diagnostic(
                     biz_data["name"], biz_data["description"], user_data["answers"])
+                
                 if report_text:
                     log_event(chat_id, "free_report_generated")
                     save_user_state(chat_id, STATE_MENU, {"generated_report": report_text, "report_title": biz_data["name"]})
-                    await send_callback_answer(callback_id,
-                        "✅ Диагностика готова! Как тебе удобнее получить?",
+                    await send_message(chat_id,
+                        "✅ Диагностика готова! (Листай вверх 👆)\n\nКак удобнее получить?",
                         get_format_choice_keyboard())
                 else:
-                    await send_callback_answer(callback_id,
+                    await send_message(chat_id,
                         "⚠️ Диагностика готова (по шаблону). Как удобнее получить?",
                         get_format_choice_keyboard())
         return
@@ -967,34 +887,32 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 await send_notification(chat_id, report_text[max_len:max_len+max_len])
             else:
                 await send_callback_answer(callback_id, "✅ Твоя диагностика:\n\n" + report_text, None)
+        
+        await asyncio.sleep(30)
+        
         await send_message(chat_id,
             "🔥 Ну как тебе?\n\n"
             "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
-            "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.",
-            get_after_diagnostic_keyboard())
-        save_user_state(chat_id, STATE_MENU, {})
-        return
-
-    if callback_data == CALLBACK_SEND_AS_FILE:
-        _, user_data = get_user_state(chat_id)
-        report_text = user_data.get("generated_report")
-        title = user_data.get("report_title", "business")
-        if report_text:
-            filename = f"Diagnostic_{title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            filepath = REPORTS_DIR / filename
-            async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
-                await f.write(report_text)
-            await send_file_message(
-                chat_id,
-                "📄 Твоя бесплатная диагностика",
-                str(filepath),
-                "file"
-            )
-        await send_message(chat_id,
-            "🔥 Ну как тебе?\n\n"
-            "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
-            "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.",
-            get_after_diagnostic_keyboard())
+            "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
+            "👇 А если хочешь, чтобы я лично разобрала твой бизнес — жми на консультацию",
+            [
+                [
+                    {
+                        "type": "callback",
+                        "text": "🔥 План продаж за 490 ₽",
+                        "payload": CALLBACK_MY_PREMIUM,
+                        "intent": "default"
+                    }
+                ],
+                [
+                    {
+                        "type": "callback",
+                        "text": "👩‍💼 Бесплатная консультация",
+                        "payload": CALLBACK_BOOK_CALL,
+                        "intent": "default"
+                    }
+                ]
+            ])
         save_user_state(chat_id, STATE_MENU, {})
         return
 
@@ -1006,9 +924,9 @@ async def process_message(user_id: str, text: str):
     if state == STATE_MENU:
         if text == "/start":
             await send_message(str(user_id),
-                "Привет! Я Вероника, продюсер экспертов.\n\n"
+                f"Привет, @{user_id}! Я Вероника, продюсер экспертов.\n\n"
                 "Контент вроде делаешь, подписчики есть, а денег нет? Знакомо.\n\n"
-                "Давай сделаем бесплатный аудит твоего канала — 2 минуты, и узнаешь, что теряешь.",
+                "Давай сделаем бесплатный аудит твоего бизнеса — 2 минуты, и узнаешь, что теряешь.",
                 get_main_menu_keyboard())
             save_user_state(str(user_id), STATE_MENU, {})
         else:
@@ -1051,16 +969,20 @@ async def process_message(user_id: str, text: str):
                 log_event(str(user_id), "survey_completed")
                 biz_data = get_business_data(str(user_id))
                 if not biz_data:
-                    await send_message(str(user_id), "❌ Ошибка: данные бизнеса не найдены. Начни заново.", get_main_menu_keyboard())
+                    await send_message(str(user_id), "❌ Ошибка. Начни заново.", get_main_menu_keyboard())
                     save_user_state(str(user_id), STATE_MENU, {})
                     return
 
-                await send_message(str(user_id), "🔍 Запускаю диагностику... Это займёт до 60 секунд.", None)
+                await send_message(str(user_id), "🔍 Запускаю анализ...", None)
+                
+                # Анимация анализа
+                await send_analysis_animation(str(user_id))
+                
                 report_text = await call_deepseek_diagnostic(biz_data["name"], biz_data["description"], answers)
                 if report_text:
                     log_event(str(user_id), "free_report_generated")
                     save_user_state(str(user_id), STATE_MENU, {"generated_report": report_text, "report_title": biz_data["name"]})
-                    await send_message(str(user_id), "✅ Диагностика готова! Как тебе удобнее получить?", get_format_choice_keyboard())
+                    await send_message(str(user_id), "✅ Диагностика готова! (Листай вверх 👆)\n\nКак удобнее получить?", get_format_choice_keyboard())
                 else:
                     await send_message(str(user_id), "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", get_format_choice_keyboard())
         return
@@ -1098,6 +1020,44 @@ async def process_message(user_id: str, text: str):
 
     await send_message(str(user_id), "Используй кнопки меню или напиши /start")
 
+# === ВЕБХУК ДЛЯ УВЕДОМЛЕНИЙ ОТ ЮKASSA ===
+@app.post("/yookassa-webhook")
+async def yookassa_webhook(request: Request):
+    try:
+        payload = await request.json()
+        logger.info(f"YooKassa webhook received: {payload}")
+        
+        event = payload.get("event")
+        if event == "payment.succeeded":
+            payment_obj = payload.get("object", {})
+            payment_id = payment_obj.get("id")
+            metadata = payment_obj.get("metadata", {})
+            user_id = metadata.get("user_id")
+            
+            if user_id and payment_id:
+                update_payment_status(payment_id, "succeeded")
+                clear_pending_payment(user_id)
+                
+                # Проверяем, готов ли отчёт
+                report_status = get_report_status(user_id)
+                if report_status and report_status['status'] == 'ready':
+                    await send_notification(user_id,
+                        "🎉 Ура! Твой план продаж готов!\n\n"
+                        "👇 Жми кнопку ниже — и забирай результат",
+                        get_download_keyboard())
+                else:
+                    await send_notification(user_id,
+                        "✅ Оплата прошла, спасибо!\n\n"
+                        "План ещё готовится — 1-2 минуты. Я пришлю уведомление, как только всё будет готово.")
+                
+                await send_notification(ADMIN_CHAT_ID,
+                    f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {user_id}\nСумма: 490 ₽\n⏰ {format_moscow_time()}")
+        
+        return Response(status_code=200)
+    except Exception as e:
+        logger.error(f"YooKassa webhook error: {e}")
+        return Response(status_code=500)
+
 # === ЗАПУСК ===
 from contextlib import asynccontextmanager
 
@@ -1123,7 +1083,6 @@ async def webhook(request: Request):
         payload = await request.json()
         logger.info(f"FULL PAYLOAD: {payload}")
 
-        # Обработка обычного сообщения (message_created)
         if "message" in payload and "callback" not in payload:
             msg = payload["message"]
             user_id = msg.get("sender", {}).get("user_id")
@@ -1132,7 +1091,6 @@ async def webhook(request: Request):
             if user_id and text:
                 await process_message(str(user_id), text)
 
-        # Обработка callback от кнопки (message_callback)
         elif "callback" in payload:
             cb = payload["callback"]
             user_id = cb.get("user", {}).get("user_id")
