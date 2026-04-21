@@ -177,6 +177,16 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_consents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            consent_type TEXT NOT NULL,
+            consent_given_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ip TEXT,
+            user_agent TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -304,6 +314,17 @@ def clear_pending_payment(user_id: str):
     conn.commit()
     conn.close()
 
+def save_consent(user_id: str, consent_type: str, ip: str = None, user_agent: str = None):
+    """Сохраняет согласие пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT INTO user_consents (user_id, consent_type, ip, user_agent)
+        VALUES (?, ?, ?, ?)
+    """, (user_id, consent_type, ip, user_agent[:500] if user_agent else None))
+    conn.commit()
+    conn.close()
+    logger.info(f"Consent saved: user_id={user_id}, type={consent_type}")
+
 def get_moscow_time():
     return datetime.utcnow() + timedelta(hours=3)
 
@@ -421,6 +442,18 @@ async def send_file_message(chat_id: str, text: str, file_path: str, file_type: 
 
 # === ПЛАТЕЖИ ===
 async def create_yookassa_payment(amount: int, description: str, user_id: str):
+    # Проверка наличия ключей
+    if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY or YKASSA_SECRET_KEY == "test":
+        logger.warning(f"YooKassa credentials missing or in test mode. SHOP_ID={YKASSA_SHOP_ID}, SECRET_KEY={'SET' if YKASSA_SECRET_KEY else 'MISSING'}")
+        # Для тестового режима возвращаем мок-ссылку
+        if YKASSA_TEST_MODE:
+            logger.info(f"Using mock payment for user {user_id}")
+            return {
+                "payment_id": f"mock_{uuid.uuid4().hex}",
+                "confirmation_url": "https://yookassa.ru/payment-mock"
+            }
+        return None
+    
     payment_id = f"salesplan_{user_id}_{uuid.uuid4().hex[:8]}"
     payload = {
         "amount": {"value": f"{amount}.00", "currency": "RUB"},
@@ -460,6 +493,13 @@ async def create_yookassa_payment(amount: int, description: str, user_id: str):
                 return None
 
 async def check_yookassa_payment(payment_id: str):
+    # Для мок-платежа
+    if payment_id.startswith("mock_"):
+        return "succeeded"
+    
+    if not YKASSA_SECRET_KEY or YKASSA_SECRET_KEY == "test":
+        return "pending"
+    
     auth = aiohttp.BasicAuth(YKASSA_SHOP_ID, YKASSA_SECRET_KEY)
     async with aiohttp.ClientSession() as session:
         async with session.get(
@@ -709,6 +749,10 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
 async def process_callback(chat_id: str, callback_id: str, callback_data: str):
     state, data = get_user_state(chat_id)
     log_event(chat_id, f"callback_{callback_data}")
+    
+    # Инициализация данных, если их нет
+    if data is None:
+        data = {}
 
     if callback_data == CALLBACK_START_AUDIT:
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {"answers": {}, "survey_step": 0})
@@ -864,7 +908,17 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                          Q4_300, Q4_500, Q4_1M, Q4_SCALE,
                          Q5_YES, Q5_NO, Q5_PROGRESS]:
         _, user_data = get_user_state(chat_id)
+        
+        # Инициализация, если нет данных
+        if user_data is None:
+            user_data = {}
+        if "answers" not in user_data:
+            user_data["answers"] = {}
+        if "survey_step" not in user_data:
+            user_data["survey_step"] = 0
+            
         step = user_data.get("survey_step", 0)
+        
         if step < len(SURVEY_QUESTIONS):
             key = SURVEY_QUESTIONS[step]["key"]
             user_data["answers"][key] = callback_data
