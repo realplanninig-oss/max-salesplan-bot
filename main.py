@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (финальная исправленная версия)
+# File: main.py — бот Salesplan для MAX (финальная версия)
 
 import asyncio
 import logging
@@ -24,8 +24,8 @@ load_dotenv()
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "test")
-YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY", "test")
+YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1325473")
+YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY")
 YKASSA_TEST_MODE = os.getenv("YKASSA_TEST_MODE", "true").lower() == "true"
 
 MAX_API_URL = "https://platform-api.max.ru"
@@ -77,10 +77,10 @@ Q2_LT5 = "q2_lt5"
 Q2_5_20 = "q2_5_20"
 Q2_20_50 = "q2_20_50"
 Q2_50P = "q2_50p"
-Q3_LT1K = "q3_lt1k"
-Q3_1_5K = "q3_1_5k"
-Q3_5_20K = "q3_5_20k"
-Q3_20KP = "q3_20kp"
+Q3_LT10 = "q3_lt10"
+Q3_10_50 = "q3_10_50"
+Q3_50_200 = "q3_50_200"
+Q3_200P = "q3_200p"
 Q4_300 = "q4_300"
 Q4_500 = "q4_500"
 Q4_1M = "q4_1m"
@@ -97,22 +97,22 @@ SURVEY_QUESTIONS = [
         (Q1_NONE, "Пока не продаю"),
     ]},
     {"key": "q2", "text": "Средний чек (₽)", "options": [
-        (Q2_LT5, "<5k"),
-        (Q2_5_20, "5k-20k"),
-        (Q2_20_50, "20k-50k"),
-        (Q2_50P, ">50k"),
+        (Q2_LT5, "до 5 000 ₽"),
+        (Q2_5_20, "5 000 - 20 000 ₽"),
+        (Q2_20_50, "20 000 - 50 000 ₽"),
+        (Q2_50P, "более 50 000 ₽"),
     ]},
-    {"key": "q3", "text": "Клиентов/мес (примерно)", "options": [
-        (Q3_LT1K, "<10"),
-        (Q3_1_5K, "10-50"),
-        (Q3_5_20K, "50-200"),
-        (Q3_20KP, ">200"),
+    {"key": "q3", "text": "Клиентов в месяц (примерно)", "options": [
+        (Q3_LT10, "менее 10"),
+        (Q3_10_50, "10-50"),
+        (Q3_50_200, "50-200"),
+        (Q3_200P, "более 200"),
     ]},
     {"key": "q4", "text": "Цель на 2026", "options": [
-        (Q4_300, "300k/мес"),
-        (Q4_500, "500k/мес"),
-        (Q4_1M, "1M/мес"),
-        (Q4_SCALE, "Масштаб"),
+        (Q4_300, "300 000 ₽/мес"),
+        (Q4_500, "500 000 ₽/мес"),
+        (Q4_1M, "1 000 000 ₽/мес"),
+        (Q4_SCALE, "Масштабирование"),
     ]},
     {"key": "q5", "text": "Уже есть автоворонка?", "options": [
         (Q5_YES, "Да"),
@@ -428,7 +428,20 @@ async def create_yookassa_payment(amount: int, description: str, user_id: str):
         "confirmation": {"type": "redirect", "return_url": "https://max.ru"},
         "description": description,
         "capture": True,
-        "metadata": {"user_id": user_id, "payment_id": payment_id}
+        "metadata": {"user_id": user_id, "payment_id": payment_id},
+        "receipt": {
+            "customer": {"phone": user_id[:10] if len(user_id) >= 10 else "79000000000"},
+            "items": [
+                {
+                    "description": description,
+                    "quantity": "1.00",
+                    "amount": {"value": f"{amount}.00", "currency": "RUB"},
+                    "vat_code": "6",
+                    "payment_mode": "full_payment",
+                    "payment_subject": "service"
+                }
+            ]
+        }
     }
     auth = aiohttp.BasicAuth(YKASSA_SHOP_ID, YKASSA_SECRET_KEY)
     async with aiohttp.ClientSession() as session:
@@ -566,13 +579,6 @@ def get_post_download_keyboard():
                 "payload": CALLBACK_BOOK_CALL,
                 "intent": "default"
             }
-        ],
-        [
-            {
-                "type": "link",
-                "text": "📚 Получить мини-курс",
-                "url": "https://t.me/zapuskintelega_bot"
-            }
         ]
     ]
 
@@ -581,7 +587,7 @@ def get_channel_subscribe_keyboard():
         [
             {
                 "type": "link",
-                "text": "📢 Подписаться на канал",
+                "text": "📢 Подписаться на канал в MAX",
                 "url": "https://max.ru/id781407988795_biz"
             }
         ]
@@ -590,10 +596,11 @@ def get_channel_subscribe_keyboard():
 # === DEEPSEEK API ===
 async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
     q1_map = {Q1_SERVICE: "Услугу", Q1_INFO: "Инфопродукт", Q1_CONSULT: "Консультацию", Q1_NONE: "Пока не продаю"}
-    q2_map = {Q2_LT5: "до 5k", Q2_5_20: "5k-20k", Q2_20_50: "20k-50k", Q2_50P: ">50k"}
-    q3_map = {Q3_LT1K: "<10 клиентов", Q3_1_5K: "10-50", Q3_5_20K: "50-200", Q3_20KP: ">200"}
-    q4_map = {Q4_300: "300k/мес", Q4_500: "500k/мес", Q4_1M: "1M/мес", Q4_SCALE: "Масштаб"}
+    q2_map = {Q2_LT5: "до 5000 ₽", Q2_5_20: "5000-20000 ₽", Q2_20_50: "20000-50000 ₽", Q2_50P: "более 50000 ₽"}
+    q3_map = {Q3_LT10: "менее 10", Q3_10_50: "10-50", Q3_50_200: "50-200", Q3_200P: "более 200"}
+    q4_map = {Q4_300: "300 000 ₽/мес", Q4_500: "500 000 ₽/мес", Q4_1M: "1 000 000 ₽/мес", Q4_SCALE: "масштабирование"}
     q5_map = {Q5_YES: "да", Q5_NO: "нет", Q5_PROGRESS: "в разработке"}
+    
     survey_info = f"""
 ДАННЫЕ О БИЗНЕСЕ:
 • Продаёт: {q1_map.get(answers.get('q1'), 'не указано')}
@@ -602,39 +609,25 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
 • Цель на 2026: {q4_map.get(answers.get('q4'), 'не указано')}
 • Автоворонка: {q5_map.get(answers.get('q5'), 'не указано')}
 """
-    prompt = f"""Сделай профессиональный маркетинговый разбор онлайн-бизнеса на основе предоставленных данных.
+    prompt = f"""Сделай профессиональный маркетинговый разбор онлайн-бизнеса.
 
 ДАННЫЕ О БИЗНЕСЕ:
 Название: {name}
 Описание: {description}
 {survey_info}
 
-Напиши структурированный отчет на русском языке в разговорном стиле, включив:
+Напиши отчет в разговорном стиле Вероники. НЕ ИСПОЛЬЗУЙ символы *, #, _, `, ~. Для списков используй просто дефис. Для заголовков используй ЗАГЛАВНЫЕ БУКВЫ.
 
-1. ОБЩАЯ ИНФОРМАЦИЯ
-   - Ниша бизнеса
-   - Целевая аудитория (кто, их главная боль, какое решение ищут)
-   - Оценка текущего уровня от 0 до 100
-
-2. АНАЛИЗ
-   - 3 сильные стороны
-   - 3 зоны роста
-
-3. ПЕРСОНАЛЬНЫЕ РЕКОМЕНДАЦИИ
-   - 3 конкретных шага для увеличения продаж
-
-ВАЖНО:
-- Пиши как Вероника, продюсер экспертов. Живо, с эмодзи, с обращением на "ты"
-- Не используй символы *, #, _ для форматирования
-- Для списков используй дефисы (-)
-- В разделе "Целевая аудитория" обязательно опиши: кто это, их главная проблема, какое решение ищут
-- В третьем разделе обязательно дай рекомендацию по настройке простой воронки продаж"""
+1. ОБЩАЯ ИНФОРМАЦИЯ (ниша, ЦА, оценка 0-100)
+2. АНАЛИЗ (3 сильные стороны, 3 зоны роста)
+3. РЕКОМЕНДАЦИИ (3 конкретных шага)"""
+    
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     data = {
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "Ты Вероника, продюсер экспертов с 8-летним опытом. Говоришь разговорно, с эмодзи, на 'ты'."},
+            {"role": "system", "content": "Ты Вероника, продюсер экспертов. Говоришь разговорно, с эмодзи, на 'ты'. НИКОГДА не используй символы *, #, _, `, ~. Только обычный текст и эмодзи."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
@@ -643,8 +636,7 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
     try:
         response = requests.post(url, headers=headers, json=data, timeout=120)
         if response.status_code == 200:
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
+            return response.json()["choices"][0]["message"]["content"]
         else:
             logger.error(f"DeepSeek error: {response.status_code}")
             return None
@@ -656,9 +648,10 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
     logger.info(f"Generating premium report for {user_id}")
     q1_map = {Q1_SERVICE: "Услугу", Q1_INFO: "Инфопродукт", Q1_CONSULT: "Консультацию", Q1_NONE: "Пока не продаю"}
     q2_map = {Q2_LT5: "до 5k", Q2_5_20: "5k-20k", Q2_20_50: "20k-50k", Q2_50P: ">50k"}
-    q3_map = {Q3_LT1K: "<10", Q3_1_5K: "10-50", Q3_5_20K: "50-200", Q3_20KP: ">200"}
+    q3_map = {Q3_LT10: "<10", Q3_10_50: "10-50", Q3_50_200: "50-200", Q3_200P: ">200"}
     q4_map = {Q4_300: "300k/мес", Q4_500: "500k/мес", Q4_1M: "1M/мес", Q4_SCALE: "Масштаб"}
     q5_map = {Q5_YES: "да", Q5_NO: "нет", Q5_PROGRESS: "в разработке"}
+    
     survey_info = f"""
 ДАННЫЕ О БИЗНЕСЕ:
 • Продаёт: {q1_map.get(answers.get('q1'), 'не указано')}
@@ -667,32 +660,28 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
 • Цель: {q4_map.get(answers.get('q4'), 'не указано')}
 • Автоворонка: {q5_map.get(answers.get('q5'), 'не указано')}
 """
-    prompt = f"""Сделай план продаж для онлайн-бизнеса.
+    prompt = f"""Сделай профессиональный план запуска продаж для онлайн-бизнеса.
 
 ДАННЫЕ:
 Название: {name}
 Описание: {description}
 {survey_info}
 
-Напиши структурированный план на русском языке в разговорном стиле Вероники:
+Напиши план в разговорном стиле Вероники. НЕ ИСПОЛЬЗУЙ символы *, #, _, `, ~. Для списков используй просто дефис. Для заголовков используй ЗАГЛАВНЫЕ БУКВЫ.
 
 1. ОЦЕНКА СИТУАЦИИ
-2. АНАЛИЗ РЫНКА И КОНКУРЕНТОВ (3-5 игроков)
+2. АНАЛИЗ КОНКУРЕНТОВ (3-5 игроков)
 3. КОМУ ПРОДАВАТЬ (ЦА)
 4. СИЛЬНЫЕ И СЛАБЫЕ СТОРОНЫ
 5. ВОРОНКА ПРОДАЖ ШАГ ЗА ШАГОМ
-6. ПЛАН ДЕЙСТВИЙ НА МЕСЯЦ
-
-Оформление:
-- Заголовки ЗАГЛАВНЫМИ БУКВАМИ, отступы пустыми строками
-- Списки через дефисы
-- Пиши живо, с эмодзи, как Вероника"""
+6. ПЛАН ДЕЙСТВИЙ НА МЕСЯЦ"""
+    
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     data = {
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "Ты Вероника, продюсер экспертов."},
+            {"role": "system", "content": "Ты Вероника, продюсер экспертов. НИКОГДА не используй символы *, #, _, `, ~. Только обычный текст и эмодзи."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
@@ -703,13 +692,15 @@ async def generate_premium_report(user_id: str, name: str, description: str, ans
         if response.status_code == 200:
             result = response.json()
             report_text = result["choices"][0]["message"]["content"]
-            filename = f"Premium_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            filename = f"Premium_{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             filepath = REPORTS_DIR / filename
             async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
                 await f.write(report_text)
             update_report_status(report_id, 'ready', str(filepath))
+            logger.info(f"Premium report generated for {user_id}")
         else:
             update_report_status(report_id, 'failed')
+            logger.error(f"Premium report API error: {response.status_code}")
     except Exception as e:
         logger.error(f"Premium report error: {e}")
         update_report_status(report_id, 'failed')
@@ -774,7 +765,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                     f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {chat_id}\nБизнес: {biz_data['name'] if biz_data else 'не указан'}\nСумма: 490 ₽\n⏰ {format_moscow_time()}")
                 report_status = get_report_status(chat_id)
                 if report_status and report_status['status'] == 'ready':
-                    # ИСПРАВЛЕНО: правильный формат кнопки
                     download_keyboard = [[
                         {
                             "type": "callback",
@@ -825,9 +815,8 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                     "Я ж знаю эту боль: информации много, а результата нет.\n\n"
                     "Поэтому я предлагаю:\n"
                     "✅ Приходи на 30-минутный разбор плана\n"
-                    "✅ Я найду ТВОЁ одно действие, которое принесёт деньги прямо сейчас\n"
-                    "🎁 А пока думаешь, забери бесплатный мини-курс «3 шага к первой продаже»")
-                await send_message(chat_id, "👇 Жми кнопку, получи мини-курс", get_post_download_keyboard())
+                    "✅ Я найду ТВОЁ одно действие, которое принесёт деньги прямо сейчас")
+                await send_message(chat_id, "👇 Жми кнопку, запишись на разбор", get_post_download_keyboard())
             else:
                 await send_callback_answer(callback_id,
                     "❌ Ой, файл не найден. Напиши мне в личные сообщения — поможем.",
@@ -871,7 +860,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
 
     if callback_data in [Q1_SERVICE, Q1_INFO, Q1_CONSULT, Q1_NONE,
                          Q2_LT5, Q2_5_20, Q2_20_50, Q2_50P,
-                         Q3_LT1K, Q3_1_5K, Q3_5_20K, Q3_20KP,
+                         Q3_LT10, Q3_10_50, Q3_50_200, Q3_200P,
                          Q4_300, Q4_500, Q4_1M, Q4_SCALE,
                          Q5_YES, Q5_NO, Q5_PROGRESS]:
         _, user_data = get_user_state(chat_id)
@@ -1030,7 +1019,7 @@ async def process_message(user_id: str, text: str):
         if form_data:
             q1_map = {Q1_SERVICE: "Услугу", Q1_INFO: "Инфопродукт", Q1_CONSULT: "Консультацию", Q1_NONE: "Пока не продаю"}
             q2_map = {Q2_LT5: "до 5k", Q2_5_20: "5k-20k", Q2_20_50: "20k-50k", Q2_50P: ">50k"}
-            q3_map = {Q3_LT1K: "<10", Q3_1_5K: "10-50", Q3_5_20K: "50-200", Q3_20KP: ">200"}
+            q3_map = {Q3_LT10: "<10", Q3_10_50: "10-50", Q3_50_200: "50-200", Q3_200P: ">200"}
             q4_map = {Q4_300: "300k/мес", Q4_500: "500k/мес", Q4_1M: "1M/мес", Q4_SCALE: "Масштаб"}
             q5_map = {Q5_YES: "Да", Q5_NO: "Нет", Q5_PROGRESS: "В разработке"}
             survey_info = f"""• Продаёт: {q1_map.get(form_data.get('q1'), 'не указано')}
@@ -1046,9 +1035,9 @@ async def process_message(user_id: str, text: str):
             "🔥 Кейсы с цифрами\n"
             "🔍 Разборы ошибок\n"
             "📝 Скрипты фраз, которые продают\n\n"
-            "После подписки зайди в закреп — там мини-курс «3 шага к первой продаже» в подарок 🎁")
+            "👇 Жми кнопку, подписывайся")
         await send_message(str(user_id),
-            "👇 Жми кнопку, подписывайся и забирай мини-курс",
+            "👇 Подписывайся на канал",
             get_channel_subscribe_keyboard())
         save_user_state(str(user_id), STATE_MENU, {})
         return
