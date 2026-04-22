@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (оптимизированная версия)
+# File: main.py — бот Salesplan для MAX (финальная исправленная версия)
 
 import asyncio
 import logging
@@ -442,7 +442,7 @@ async def send_file_message(chat_id: str, text: str, file_path: str, file_type: 
 # === ПЛАТЕЖИ ===
 async def create_yookassa_payment(amount: int, description: str, user_id: str):
     if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY or YKASSA_SECRET_KEY == "test":
-        logger.warning(f"YooKassa credentials missing or in test mode. Using mock payment")
+        logger.warning(f"YooKassa credentials missing or in test mode. SHOP_ID={YKASSA_SHOP_ID}, SECRET_KEY={'SET' if YKASSA_SECRET_KEY else 'MISSING'}")
         if YKASSA_TEST_MODE:
             logger.info(f"Using mock payment for user {user_id}")
             return {
@@ -554,43 +554,12 @@ def get_download_keyboard():
         [
             {
                 "type": "callback",
-                "text": "📥 Скачать план продаж",
+                "text": "📥 Скачать план",
                 "payload": CALLBACK_DOWNLOAD_REPORT,
                 "intent": "default"
             }
         ]
     ]
-
-def get_after_download_keyboard(is_subscribed: bool = False):
-    if is_subscribed:
-        return [
-            [
-                {
-                    "type": "callback",
-                    "text": "👩‍💼 Разобрать план (30 мин)",
-                    "payload": CALLBACK_BOOK_CALL,
-                    "intent": "default"
-                }
-            ]
-        ]
-    else:
-        return [
-            [
-                {
-                    "type": "link",
-                    "text": "📢 Подписаться на канал",
-                    "url": "https://max.ru/id781407988795_biz"
-                }
-            ],
-            [
-                {
-                    "type": "callback",
-                    "text": "👩‍💼 Разобрать план (30 мин)",
-                    "payload": CALLBACK_BOOK_CALL,
-                    "intent": "default"
-                }
-            ]
-        ]
 
 def get_channel_subscribe_keyboard():
     return [
@@ -740,16 +709,16 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
         data = {}
     
     # Сохраняем username в состояние
+    user_name = username or f"user_{chat_id}"
     if username:
         data["username"] = username
         save_user_state(chat_id, state, data)
 
     if callback_data == CALLBACK_START_AUDIT:
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {"answers": {}, "survey_step": 0})
-        user_name = username or chat_id
         await send_callback_answer(callback_id,
-            f"Окей, погнали! 🚀\n\n@{user_name}, напиши название своего онлайн-бизнеса (как ты представляешь его клиентам):",
-            None)
+            f"Окей, погнали! 🚀\n\n{user_name}, напиши название своего онлайн-бизнеса (как ты представляешь его клиентам):",
+            None)  # ← убираем кнопку "Бесплатный аудит"
         return
 
     if callback_data == CALLBACK_MY_PREMIUM:
@@ -762,14 +731,14 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                 get_main_menu_keyboard())
             return
 
-        payment = await create_yookassa_payment(490, "План продаж Salesplan", chat_id)
+        payment = await create_yookassa_payment(490, "Профессиональный маркетинговый план", chat_id)
         if payment and payment.get("confirmation_url"):
             save_pending_payment(chat_id, payment["payment_id"])
             save_user_state(chat_id, STATE_WAITING_PAYMENT, {"payment_id": payment["payment_id"]})
             
             await send_callback_answer(callback_id,
-                f"🔍 Запускаю генерацию плана продаж... 1-2 минуты — и всё готово.\n\n"
-                f"🔥 Твой план будет содержать:\n"
+                f"🔍 Запускаю генерацию плана... 1-2 минуты — и всё готово.\n\n"
+                f"🔥 Твой профессиональный маркетинговый план будет содержать:\n"
                 f"• Разбор 5 конкурентов\n"
                 f"• Анализ ЦА\n"
                 f"• Готовую воронку\n"
@@ -793,7 +762,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
             if filepath.exists():
                 await send_file_message(
                     chat_id,
-                    "📄 Держи свой план продаж!",
+                    "📄 Держи свой профессиональный маркетинговый план!",
                     str(filepath),
                     "file"
                 )
@@ -806,8 +775,9 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                     "За 30 минут я:\n"
                     "✅ Найду ТВОЁ одно действие, которое принесёт деньги прямо сейчас\n"
                     "✅ Покажу, где теряешь клиентов\n"
-                    "✅ Дам конкретный план на неделю",
-                    get_after_download_keyboard(False))
+                    "✅ Дам конкретный план на неделю\n\n"
+                    "👇 Подпишись на канал и напиши мне",
+                    get_channel_subscribe_keyboard())
             else:
                 await send_callback_answer(callback_id,
                     "❌ Файл не найден. Напиши мне — поможем.",
@@ -875,9 +845,8 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                     save_user_state(chat_id, STATE_MENU, {})
                     return
 
-                await send_callback_answer(callback_id,
-                    "🔍 Запускаю анализ...",
-                    None)
+                # Убираем кнопки опросника — отправляем пустую клавиатуру
+                await send_callback_answer(callback_id, "🔍 Запускаю анализ...", None)
                 
                 # Анимация анализа
                 await send_analysis_animation(chat_id)
@@ -889,7 +858,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                     log_event(chat_id, "free_report_generated")
                     save_user_state(chat_id, STATE_MENU, {})
                     
-                    # Отправляем отчёт сразу, без лишних вопросов
+                    # Отправляем отчёт сразу
                     max_len = 3800
                     if len(report_text) > max_len:
                         await send_message(chat_id, f"✅ Твоя диагностика:\n\n{report_text[:max_len]}", None)
@@ -897,19 +866,20 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                     else:
                         await send_message(chat_id, f"✅ Твоя диагностика:\n\n{report_text}", None)
                     
-                    await asyncio.sleep(2)
+                    # Задержка 30 секунд перед апсейлом
+                    await asyncio.sleep(30)
                     
                     # Апсейл на платный план
                     await send_message(chat_id,
                         "🔥 Ну как тебе?\n\n"
                         "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
-                        "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
+                        "Закажи профессиональный маркетинговый план за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
                         "👇 А если хочешь, чтобы я лично разобрала твой бизнес — подпишись на канал и напиши мне",
                         [
                             [
                                 {
                                     "type": "callback",
-                                    "text": "🔥 План продаж за 490 ₽",
+                                    "text": "🔥 Профессиональный маркетинговый план",
                                     "payload": CALLBACK_MY_PREMIUM,
                                     "intent": "default"
                                 }
@@ -933,16 +903,13 @@ async def process_message(user_id: str, text: str, username: str = None):
     state, data = get_user_state(str(user_id))
     log_event(str(user_id), f"message: {text[:50]}")
     
-    # Сохраняем username в состояние
-    if username:
-        data["username"] = username
-        save_user_state(str(user_id), state, data)
+    # Сохраняем username
+    user_name = username or f"user_{user_id}"
 
     if state == STATE_MENU:
         if text == "/start":
-            user_name = username or user_id
             await send_message(str(user_id),
-                f"Привет, @{user_name}! Я Вероника, продюсер экспертов.\n\n"
+                f"Привет, {user_name}! Я Вероника, продюсер экспертов.\n\n"
                 "Контент вроде делаешь, подписчики есть, а денег нет? Знакомо.\n\n"
                 "Давай сделаем бесплатный аудит твоего бизнеса — 2 минуты, и узнаешь, что теряешь.",
                 get_main_menu_keyboard())
@@ -1009,19 +976,20 @@ async def process_message(user_id: str, text: str, username: str = None):
                     else:
                         await send_message(str(user_id), f"✅ Твоя диагностика:\n\n{report_text}", None)
                     
-                    await asyncio.sleep(2)
+                    # Задержка 30 секунд перед апсейлом
+                    await asyncio.sleep(30)
                     
                     # Апсейл на платный план
                     await send_message(str(user_id),
                         "🔥 Ну как тебе?\n\n"
                         "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
-                        "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
+                        "Закажи профессиональный маркетинговый план за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
                         "👇 А если хочешь, чтобы я лично разобрала твой бизнес — подпишись на канал и напиши мне",
                         [
                             [
                                 {
                                     "type": "callback",
-                                    "text": "🔥 План продаж за 490 ₽",
+                                    "text": "🔥 Профессиональный маркетинговый план",
                                     "payload": CALLBACK_MY_PREMIUM,
                                     "intent": "default"
                                 }
@@ -1144,7 +1112,7 @@ async def yookassa_webhook(request: Request):
                 report_status = get_report_status(user_id)
                 if report_status and report_status['status'] == 'ready':
                     await send_notification(user_id,
-                        "🎉 Ура! Твой план продаж готов!\n\n"
+                        "🎉 Ура! Твой профессиональный маркетинговый план готов!\n\n"
                         "👇 Жми кнопку ниже — и забирай результат",
                         get_download_keyboard())
                 else:
@@ -1153,7 +1121,7 @@ async def yookassa_webhook(request: Request):
                         "План ещё готовится — 1-2 минуты. Я пришлю уведомление, как только всё будет готово.")
                 
                 await send_notification(ADMIN_CHAT_ID,
-                    f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {user_id}\nСумма: 490 ₽\n⏰ {format_moscow_time()}")
+                    f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {user_id}\nСумма: 490 ₽\nТовар: Профессиональный маркетинговый план\n⏰ {format_moscow_time()}")
         
         return Response(status_code=200)
     except Exception as e:
