@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (полностью исправленная версия)
+# File: main.py — бот Salesplan для MAX (оптимизированная версия)
 
 import asyncio
 import logging
@@ -64,7 +64,6 @@ CALLBACK_START_AUDIT = "start_audit"
 CALLBACK_MY_PREMIUM = "my_premium"
 CALLBACK_BOOK_CALL = "book_call"
 CALLBACK_DOWNLOAD_REPORT = "download_report"
-CALLBACK_SEND_AS_TEXT = "send_as_text"
 CALLBACK_HELP = "help"
 
 # === ОПРОСНИК ===
@@ -456,7 +455,7 @@ async def create_yookassa_payment(amount: int, description: str, user_id: str):
     payload = {
         "amount": {"value": f"{amount}.00", "currency": "RUB"},
         "payment_method_data": {"type": "bank_card"},
-        "confirmation": {"type": "redirect", "return_url": "https://max.ru"},
+        "confirmation": {"type": "redirect", "return_url": f"https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/"},
         "description": description,
         "capture": True,
         "metadata": {"user_id": user_id, "payment_id": payment_id},
@@ -539,18 +538,6 @@ def get_survey_keyboard(question_index: int):
         ])
     return keyboard
 
-def get_format_choice_keyboard():
-    return [
-        [
-            {
-                "type": "callback",
-                "text": "📝 В сообщении",
-                "payload": CALLBACK_SEND_AS_TEXT,
-                "intent": "default"
-            }
-        ]
-    ]
-
 def get_payment_keyboard(confirmation_url: str):
     return [
         [
@@ -574,17 +561,36 @@ def get_download_keyboard():
         ]
     ]
 
-def get_after_download_keyboard():
-    return [
-        [
-            {
-                "type": "callback",
-                "text": "👩‍💼 Разобрать план (30 мин бесплатно)",
-                "payload": CALLBACK_BOOK_CALL,
-                "intent": "default"
-            }
+def get_after_download_keyboard(is_subscribed: bool = False):
+    if is_subscribed:
+        return [
+            [
+                {
+                    "type": "callback",
+                    "text": "👩‍💼 Разобрать план (30 мин)",
+                    "payload": CALLBACK_BOOK_CALL,
+                    "intent": "default"
+                }
+            ]
         ]
-    ]
+    else:
+        return [
+            [
+                {
+                    "type": "link",
+                    "text": "📢 Подписаться на канал",
+                    "url": "https://max.ru/id781407988795_biz"
+                }
+            ],
+            [
+                {
+                    "type": "callback",
+                    "text": "👩‍💼 Разобрать план (30 мин)",
+                    "payload": CALLBACK_BOOK_CALL,
+                    "intent": "default"
+                }
+            ]
+        ]
 
 def get_channel_subscribe_keyboard():
     return [
@@ -719,23 +725,30 @@ async def send_analysis_animation(chat_id: str):
     ]
     
     for i, step in enumerate(steps):
-        await send_message(chat_id, f"🔄 *{step}*\n\n⏳ {i+1}/4", None)
+        await send_message(chat_id, f"🔄 {step}\n\n⏳ {i+1}/4", None)
         await asyncio.sleep(8)
     
-    await send_message(chat_id, "✨ Готово! Анализ завершён.", None)
+    await send_message(chat_id, "⏳ Осталось 5 секунд...", None)
+    await asyncio.sleep(5)
 
 # === ОБРАБОТЧИКИ ===
-async def process_callback(chat_id: str, callback_id: str, callback_data: str):
+async def process_callback(chat_id: str, callback_id: str, callback_data: str, username: str = None):
     state, data = get_user_state(chat_id)
     log_event(chat_id, f"callback_{callback_data}")
     
     if data is None:
         data = {}
+    
+    # Сохраняем username в состояние
+    if username:
+        data["username"] = username
+        save_user_state(chat_id, state, data)
 
     if callback_data == CALLBACK_START_AUDIT:
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {"answers": {}, "survey_step": 0})
+        user_name = username or chat_id
         await send_callback_answer(callback_id,
-            f"Окей, погнали! 🚀\n\n@{chat_id}, напиши название своего онлайн-бизнеса (как ты представляешь его клиентам):",
+            f"Окей, погнали! 🚀\n\n@{user_name}, напиши название своего онлайн-бизнеса (как ты представляешь его клиентам):",
             None)
         return
 
@@ -793,9 +806,8 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                     "За 30 минут я:\n"
                     "✅ Найду ТВОЁ одно действие, которое принесёт деньги прямо сейчас\n"
                     "✅ Покажу, где теряешь клиентов\n"
-                    "✅ Дам конкретный план на неделю\n\n"
-                    "👇 Жми кнопку — забронируй время",
-                    get_after_download_keyboard())
+                    "✅ Дам конкретный план на неделю",
+                    get_after_download_keyboard(False))
             else:
                 await send_callback_answer(callback_id,
                     "❌ Файл не найден. Напиши мне — поможем.",
@@ -816,21 +828,14 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
     if callback_data == CALLBACK_BOOK_CALL:
         save_user_state(chat_id, STATE_WAITING_CALL, {})
         await send_callback_answer(callback_id,
-            "Привет! Я Вероника Макаревич.\n\n"
-            "8 лет помогаю экспертам запускать продажи.\n\n"
-            "Кейсы моих клиентов:\n"
-            "🔥 Психолог Елена — 7 клиентов за 2 недели, +180 000 ₽\n"
-            "🔥 Мастер Фен Шуй — запуск 200 000 ₽\n\n"
-            "Почему я предлагаю 30 минут бесплатно?\n\n"
-            "За это время я:\n"
-            "✅ Найду твою точку роста\n"
-            "✅ Покажу, почему сейчас не продаётся\n"
-            "✅ Дам конкретный план на неделю\n\n"
-            "Напиши в одном сообщении:\n"
-            "🔗 Ссылку на бизнес\n"
-            "👤 Твой username\n"
-            "🕐 Удобное время\n\n👇 Жду",
-            None)
+            "🔥 Только для подписчиков канала!\n\n"
+            "Подпишись на мой канал в MAX — там я делюсь:\n"
+            "• Кейсами с цифрами\n"
+            "• Разборами ошибок\n"
+            "• Скриптами, которые продают\n\n"
+            "После подписки напиши мне — и получишь 30 минут БЕСПЛАТНОГО разбора твоего плана.\n\n"
+            "👇 Жми кнопку, подписывайся",
+            get_channel_subscribe_keyboard())
         return
 
     if callback_data in [Q1_SERVICE, Q1_INFO, Q1_CONSULT, Q1_NONE,
@@ -882,68 +887,66 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 
                 if report_text:
                     log_event(chat_id, "free_report_generated")
-                    save_user_state(chat_id, STATE_MENU, {"generated_report": report_text, "report_title": biz_data["name"]})
+                    save_user_state(chat_id, STATE_MENU, {})
+                    
+                    # Отправляем отчёт сразу, без лишних вопросов
+                    max_len = 3800
+                    if len(report_text) > max_len:
+                        await send_message(chat_id, f"✅ Твоя диагностика:\n\n{report_text[:max_len]}", None)
+                        await send_notification(chat_id, report_text[max_len:max_len+max_len])
+                    else:
+                        await send_message(chat_id, f"✅ Твоя диагностика:\n\n{report_text}", None)
+                    
+                    await asyncio.sleep(2)
+                    
+                    # Апсейл на платный план
                     await send_message(chat_id,
-                        "✅ Диагностика готова! (Листай вверх 👆)\n\nКак удобнее получить?",
-                        get_format_choice_keyboard())
+                        "🔥 Ну как тебе?\n\n"
+                        "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
+                        "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
+                        "👇 А если хочешь, чтобы я лично разобрала твой бизнес — подпишись на канал и напиши мне",
+                        [
+                            [
+                                {
+                                    "type": "callback",
+                                    "text": "🔥 План продаж за 490 ₽",
+                                    "payload": CALLBACK_MY_PREMIUM,
+                                    "intent": "default"
+                                }
+                            ],
+                            [
+                                {
+                                    "type": "link",
+                                    "text": "📢 Подписаться на канал",
+                                    "url": "https://max.ru/id781407988795_biz"
+                                }
+                            ]
+                        ])
                 else:
                     await send_message(chat_id,
-                        "⚠️ Диагностика готова (по шаблону). Как удобнее получить?",
-                        get_format_choice_keyboard())
+                        "⚠️ Диагностика готова (по шаблону).",
+                        get_main_menu_keyboard())
         return
 
-    if callback_data == CALLBACK_SEND_AS_TEXT:
-        _, user_data = get_user_state(chat_id)
-        report_text = user_data.get("generated_report")
-        if report_text:
-            max_len = 3800
-            if len(report_text) > max_len:
-                await send_callback_answer(callback_id, "✅ Твоя диагностика:\n\n" + report_text[:max_len], None)
-                await send_notification(chat_id, report_text[max_len:max_len+max_len])
-            else:
-                await send_callback_answer(callback_id, "✅ Твоя диагностика:\n\n" + report_text, None)
-        
-        await asyncio.sleep(30)
-        
-        await send_message(chat_id,
-            "🔥 Ну как тебе?\n\n"
-            "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
-            "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
-            "👇 А если хочешь, чтобы я лично разобрала твой бизнес — жми на консультацию",
-            [
-                [
-                    {
-                        "type": "callback",
-                        "text": "🔥 План продаж за 490 ₽",
-                        "payload": CALLBACK_MY_PREMIUM,
-                        "intent": "default"
-                    }
-                ],
-                [
-                    {
-                        "type": "callback",
-                        "text": "👩‍💼 Бесплатная консультация",
-                        "payload": CALLBACK_BOOK_CALL,
-                        "intent": "default"
-                    }
-                ]
-            ])
-        save_user_state(chat_id, STATE_MENU, {})
-        return
-
-async def process_message(user_id: str, text: str):
+async def process_message(user_id: str, text: str, username: str = None):
     logger.info(f"PROCESS_MESSAGE called: user_id={user_id}, text={text}")
     state, data = get_user_state(str(user_id))
     log_event(str(user_id), f"message: {text[:50]}")
+    
+    # Сохраняем username в состояние
+    if username:
+        data["username"] = username
+        save_user_state(str(user_id), state, data)
 
     if state == STATE_MENU:
         if text == "/start":
+            user_name = username or user_id
             await send_message(str(user_id),
-                f"Привет, @{user_id}! Я Вероника, продюсер экспертов.\n\n"
+                f"Привет, @{user_name}! Я Вероника, продюсер экспертов.\n\n"
                 "Контент вроде делаешь, подписчики есть, а денег нет? Знакомо.\n\n"
                 "Давай сделаем бесплатный аудит твоего бизнеса — 2 минуты, и узнаешь, что теряешь.",
                 get_main_menu_keyboard())
-            save_user_state(str(user_id), STATE_MENU, {})
+            save_user_state(str(user_id), STATE_MENU, data)
         else:
             await send_message(str(user_id), "Используй кнопки меню или напиши /start")
         return
@@ -996,10 +999,45 @@ async def process_message(user_id: str, text: str):
                 report_text = await call_deepseek_diagnostic(biz_data["name"], biz_data["description"], answers)
                 if report_text:
                     log_event(str(user_id), "free_report_generated")
-                    save_user_state(str(user_id), STATE_MENU, {"generated_report": report_text, "report_title": biz_data["name"]})
-                    await send_message(str(user_id), "✅ Диагностика готова! (Листай вверх 👆)\n\nКак удобнее получить?", get_format_choice_keyboard())
+                    save_user_state(str(user_id), STATE_MENU, {})
+                    
+                    # Отправляем отчёт сразу
+                    max_len = 3800
+                    if len(report_text) > max_len:
+                        await send_message(str(user_id), f"✅ Твоя диагностика:\n\n{report_text[:max_len]}", None)
+                        await send_notification(str(user_id), report_text[max_len:max_len+max_len])
+                    else:
+                        await send_message(str(user_id), f"✅ Твоя диагностика:\n\n{report_text}", None)
+                    
+                    await asyncio.sleep(2)
+                    
+                    # Апсейл на платный план
+                    await send_message(str(user_id),
+                        "🔥 Ну как тебе?\n\n"
+                        "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
+                        "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
+                        "👇 А если хочешь, чтобы я лично разобрала твой бизнес — подпишись на канал и напиши мне",
+                        [
+                            [
+                                {
+                                    "type": "callback",
+                                    "text": "🔥 План продаж за 490 ₽",
+                                    "payload": CALLBACK_MY_PREMIUM,
+                                    "intent": "default"
+                                }
+                            ],
+                            [
+                                {
+                                    "type": "link",
+                                    "text": "📢 Подписаться на канал",
+                                    "url": "https://max.ru/id781407988795_biz"
+                                }
+                            ]
+                        ])
                 else:
-                    await send_message(str(user_id), "⚠️ Диагностика готова (по шаблону). Как удобнее получить?", get_format_choice_keyboard())
+                    await send_message(str(user_id),
+                        "⚠️ Диагностика готова (по шаблону).",
+                        get_main_menu_keyboard())
         return
 
     if state == STATE_WAITING_CALL:
@@ -1064,19 +1102,21 @@ async def webhook(request: Request):
         if "message" in payload and "callback" not in payload:
             msg = payload["message"]
             user_id = msg.get("sender", {}).get("user_id")
+            username = msg.get("sender", {}).get("username")
             body = msg.get("body", {})
             text = body.get("text")
             if user_id and text:
-                await process_message(str(user_id), text)
+                await process_message(str(user_id), text, username)
 
         elif "callback" in payload:
             cb = payload["callback"]
             user_id = cb.get("user", {}).get("user_id")
+            username = cb.get("user", {}).get("username")
             callback_id = cb.get("callback_id")
             data = cb.get("payload")
             logger.info(f"CALLBACK RECEIVED: user_id={user_id}, callback_id={callback_id}, payload={data}")
             if user_id and data:
-                await process_callback(str(user_id), str(callback_id), data)
+                await process_callback(str(user_id), str(callback_id), data, username)
 
         return Response(status_code=200)
     except Exception as e:
