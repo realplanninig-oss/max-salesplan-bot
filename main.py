@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (финальная исправленная версия)
+# File: main.py — бот Salesplan для MAX (финальная версия)
 
 import asyncio
 import logging
@@ -24,7 +24,7 @@ load_dotenv()
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1325473")
+YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1310983")
 YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY")
 YKASSA_TEST_MODE = os.getenv("YKASSA_TEST_MODE", "true").lower() == "true"
 
@@ -441,14 +441,9 @@ async def send_file_message(chat_id: str, text: str, file_path: str, file_type: 
 
 # === ПЛАТЕЖИ ===
 async def create_yookassa_payment(amount: int, description: str, user_id: str):
-    if not YKASSA_SHOP_ID or not YKASSA_SECRET_KEY or YKASSA_SECRET_KEY == "test":
-        logger.warning(f"YooKassa credentials missing or in test mode. SHOP_ID={YKASSA_SHOP_ID}, SECRET_KEY={'SET' if YKASSA_SECRET_KEY else 'MISSING'}")
-        if YKASSA_TEST_MODE:
-            logger.info(f"Using mock payment for user {user_id}")
-            return {
-                "payment_id": f"mock_{uuid.uuid4().hex}",
-                "confirmation_url": "https://yookassa.ru/payment-mock"
-            }
+    # Проверяем наличие ключей
+    if not YKASSA_SECRET_KEY or YKASSA_SECRET_KEY == "test" or YKASSA_SECRET_KEY == "":
+        logger.error(f"YooKassa SECRET_KEY is missing or invalid! Current value: {'SET' if YKASSA_SECRET_KEY else 'MISSING'}")
         return None
     
     payment_id = f"salesplan_{user_id}_{uuid.uuid4().hex[:8]}"
@@ -473,6 +468,9 @@ async def create_yookassa_payment(amount: int, description: str, user_id: str):
             ]
         }
     }
+    
+    logger.info(f"Creating YooKassa payment: shop_id={YKASSA_SHOP_ID}, amount={amount}, user_id={user_id}")
+    
     auth = aiohttp.BasicAuth(YKASSA_SHOP_ID, YKASSA_SECRET_KEY)
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -483,6 +481,7 @@ async def create_yookassa_payment(amount: int, description: str, user_id: str):
         ) as resp:
             if resp.status in (200, 201):
                 data = await resp.json()
+                logger.info(f"YooKassa payment created: {data['id']}")
                 return {"payment_id": data["id"], "confirmation_url": data["confirmation"]["confirmation_url"]}
             else:
                 error_text = await resp.text()
@@ -490,9 +489,6 @@ async def create_yookassa_payment(amount: int, description: str, user_id: str):
                 return None
 
 async def check_yookassa_payment(payment_id: str):
-    if payment_id.startswith("mock_"):
-        return "succeeded"
-    
     if not YKASSA_SECRET_KEY or YKASSA_SECRET_KEY == "test":
         return "pending"
     
@@ -708,17 +704,14 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
     if data is None:
         data = {}
     
-    # Сохраняем username в состояние
-    user_name = username or f"user_{chat_id}"
-    if username:
-        data["username"] = username
-        save_user_state(chat_id, state, data)
+    # Сохраняем username
+    user_name = username if username else f"гость"
 
     if callback_data == CALLBACK_START_AUDIT:
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {"answers": {}, "survey_step": 0})
         await send_callback_answer(callback_id,
             f"Окей, погнали! 🚀\n\n{user_name}, напиши название своего онлайн-бизнеса (как ты представляешь его клиентам):",
-            None)  # ← убираем кнопку "Бесплатный аудит"
+            None)
         return
 
     if callback_data == CALLBACK_MY_PREMIUM:
@@ -731,14 +724,14 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                 get_main_menu_keyboard())
             return
 
-        payment = await create_yookassa_payment(490, "Профессиональный маркетинговый план", chat_id)
+        payment = await create_yookassa_payment(490, "План продаж", chat_id)
         if payment and payment.get("confirmation_url"):
             save_pending_payment(chat_id, payment["payment_id"])
             save_user_state(chat_id, STATE_WAITING_PAYMENT, {"payment_id": payment["payment_id"]})
             
             await send_callback_answer(callback_id,
                 f"🔍 Запускаю генерацию плана... 1-2 минуты — и всё готово.\n\n"
-                f"🔥 Твой профессиональный маркетинговый план будет содержать:\n"
+                f"🔥 Твой план продаж будет содержать:\n"
                 f"• Разбор 5 конкурентов\n"
                 f"• Анализ ЦА\n"
                 f"• Готовую воронку\n"
@@ -762,7 +755,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
             if filepath.exists():
                 await send_file_message(
                     chat_id,
-                    "📄 Держи свой профессиональный маркетинговый план!",
+                    "📄 Держи свой план продаж!",
                     str(filepath),
                     "file"
                 )
@@ -845,7 +838,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                     save_user_state(chat_id, STATE_MENU, {})
                     return
 
-                # Убираем кнопки опросника — отправляем пустую клавиатуру
+                # Убираем кнопки опросника
                 await send_callback_answer(callback_id, "🔍 Запускаю анализ...", None)
                 
                 # Анимация анализа
@@ -873,13 +866,13 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                     await send_message(chat_id,
                         "🔥 Ну как тебе?\n\n"
                         "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
-                        "Закажи профессиональный маркетинговый план за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
+                        "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
                         "👇 А если хочешь, чтобы я лично разобрала твой бизнес — подпишись на канал и напиши мне",
                         [
                             [
                                 {
                                     "type": "callback",
-                                    "text": "🔥 Профессиональный маркетинговый план",
+                                    "text": "🔥 План продаж за 490 ₽",
                                     "payload": CALLBACK_MY_PREMIUM,
                                     "intent": "default"
                                 }
@@ -904,7 +897,7 @@ async def process_message(user_id: str, text: str, username: str = None):
     log_event(str(user_id), f"message: {text[:50]}")
     
     # Сохраняем username
-    user_name = username or f"user_{user_id}"
+    user_name = username if username else f"гость"
 
     if state == STATE_MENU:
         if text == "/start":
@@ -983,13 +976,13 @@ async def process_message(user_id: str, text: str, username: str = None):
                     await send_message(str(user_id),
                         "🔥 Ну как тебе?\n\n"
                         "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
-                        "Закажи профессиональный маркетинговый план за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
+                        "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
                         "👇 А если хочешь, чтобы я лично разобрала твой бизнес — подпишись на канал и напиши мне",
                         [
                             [
                                 {
                                     "type": "callback",
-                                    "text": "🔥 Профессиональный маркетинговый план",
+                                    "text": "🔥 План продаж за 490 ₽",
                                     "payload": CALLBACK_MY_PREMIUM,
                                     "intent": "default"
                                 }
@@ -1112,7 +1105,7 @@ async def yookassa_webhook(request: Request):
                 report_status = get_report_status(user_id)
                 if report_status and report_status['status'] == 'ready':
                     await send_notification(user_id,
-                        "🎉 Ура! Твой профессиональный маркетинговый план готов!\n\n"
+                        "🎉 Ура! Твой план продаж готов!\n\n"
                         "👇 Жми кнопку ниже — и забирай результат",
                         get_download_keyboard())
                 else:
@@ -1121,7 +1114,7 @@ async def yookassa_webhook(request: Request):
                         "План ещё готовится — 1-2 минуты. Я пришлю уведомление, как только всё будет готово.")
                 
                 await send_notification(ADMIN_CHAT_ID,
-                    f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {user_id}\nСумма: 490 ₽\nТовар: Профессиональный маркетинговый план\n⏰ {format_moscow_time()}")
+                    f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {user_id}\nСумма: 490 ₽\nТовар: План продаж\n⏰ {format_moscow_time()}")
         
         return Response(status_code=200)
     except Exception as e:
