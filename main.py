@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (финальная версия)
+# File: main.py — бот Salesplan для MAX (полная версия с чатом и челленджем)
 
 import asyncio
 import logging
@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, Response, HTTPException, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
 import aiohttp
 import aiofiles
 import uvicorn
@@ -65,6 +66,11 @@ CALLBACK_MY_PREMIUM = "my_premium"
 CALLBACK_BOOK_CALL = "book_call"
 CALLBACK_DOWNLOAD_REPORT = "download_report"
 CALLBACK_HELP = "help"
+CALLBACK_ASK_AI = "ask_ai"
+CALLBACK_CHALLENGE = "challenge"
+CALLBACK_TASK = "task"
+CALLBACK_DONE = "done"
+CALLBACK_PROGRESS = "progress"
 
 # === ОПРОСНИК ===
 Q1_SERVICE = "q1_service"
@@ -142,7 +148,8 @@ def init_db():
             file_path TEXT,
             status TEXT DEFAULT 'generating',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ready_at TIMESTAMP
+            ready_at TIMESTAMP,
+            paid_at TIMESTAMP
         )
     """)
     conn.execute("""
@@ -183,6 +190,45 @@ def init_db():
             consent_given_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             ip TEXT,
             user_agent TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS challenges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            current_day INTEGER DEFAULT 1,
+            tasks_completed INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'active'
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS challenge_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            challenge_id INTEGER NOT NULL,
+            day_number INTEGER NOT NULL,
+            task_text TEXT NOT NULL,
+            is_completed BOOLEAN DEFAULT 0,
+            completed_at TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS implementation_leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            phone TEXT,
+            question TEXT,
+            status TEXT DEFAULT 'new',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
@@ -229,16 +275,6 @@ def get_business_data(user_id: str):
         return {"name": row[0], "description": row[1]}
     return None
 
-def save_form(user_id: str, answers: dict):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        INSERT OR REPLACE INTO forms (user_id, q1, q2, q3, q4, q5)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (user_id, answers.get("q1"), answers.get("q2"), answers.get("q3"),
-          answers.get("q4"), answers.get("q5")))
-    conn.commit()
-    conn.close()
-
 def get_form(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute(
@@ -251,6 +287,16 @@ def get_form(user_id: str):
         return {"q1": row[0], "q2": row[1], "q3": row[2], "q4": row[3], "q5": row[4]}
     return None
 
+def save_form(user_id: str, answers: dict):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT OR REPLACE INTO forms (user_id, q1, q2, q3, q4, q5)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (user_id, answers.get("q1"), answers.get("q2"), answers.get("q3"),
+          answers.get("q4"), answers.get("q5")))
+    conn.commit()
+    conn.close()
+
 def save_report_request(user_id: str) -> int:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute("""
@@ -262,13 +308,19 @@ def save_report_request(user_id: str) -> int:
     conn.close()
     return report_id
 
-def update_report_status(report_id: int, status: str, file_path: str = None):
+def update_report_status(report_id: int, status: str, file_path: str = None, paid_at: str = None):
     conn = sqlite3.connect(DB_PATH)
     if status == 'ready':
-        conn.execute("""
-            UPDATE reports SET status = ?, file_path = ?, ready_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        """, (status, file_path, report_id))
+        if paid_at:
+            conn.execute("""
+                UPDATE reports SET status = ?, file_path = ?, ready_at = CURRENT_TIMESTAMP, paid_at = ?
+                WHERE id = ?
+            """, (status, file_path, paid_at, report_id))
+        else:
+            conn.execute("""
+                UPDATE reports SET status = ?, file_path = ?, ready_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (status, file_path, report_id))
     else:
         conn.execute("UPDATE reports SET status = ? WHERE id = ?", (status, report_id))
     conn.commit()
@@ -277,15 +329,97 @@ def update_report_status(report_id: int, status: str, file_path: str = None):
 def get_report_status(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute("""
-        SELECT id, status, file_path, ready_at FROM reports
+        SELECT id, status, file_path, ready_at, paid_at FROM reports
         WHERE user_id = ? AND report_type = 'premium'
         ORDER BY created_at DESC LIMIT 1
     """, (user_id,))
     row = cursor.fetchone()
     conn.close()
     if row:
-        return {"id": row[0], "status": row[1], "file_path": row[2], "ready_at": row[3]}
+        return {"id": row[0], "status": row[1], "file_path": row[2], "ready_at": row[3], "paid_at": row[4]}
     return None
+
+def get_premium_report_text(user_id: str) -> str:
+    """Возвращает текст премиум-отчёта пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT report_text, file_path FROM reports 
+        WHERE user_id = ? AND report_type = 'premium' AND status = 'ready'
+        ORDER BY created_at DESC LIMIT 1
+    """, (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return None
+    
+    report_text = row[0]
+    if not report_text and row[1]:
+        try:
+            with open(row[1], 'r', encoding='utf-8') as f:
+                report_text = f.read()
+        except:
+            pass
+    
+    return report_text
+
+def has_active_access(user_id: str) -> bool:
+    """Проверяет, есть ли у пользователя активный доступ (оплачено и не прошло 30 дней)"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT paid_at FROM reports 
+        WHERE user_id = ? AND report_type = 'premium' AND status = 'ready'
+        ORDER BY paid_at DESC LIMIT 1
+    """, (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or not row[0]:
+        return False
+    
+    paid_at = datetime.fromisoformat(row[0])
+    days_left = 30 - (get_moscow_time() - paid_at).days
+    return days_left > 0
+
+def get_days_left(user_id: str) -> int:
+    """Возвращает количество оставшихся дней доступа"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT paid_at FROM reports 
+        WHERE user_id = ? AND report_type = 'premium' AND status = 'ready'
+        ORDER BY paid_at DESC LIMIT 1
+    """, (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row or not row[0]:
+        return 0
+    
+    paid_at = datetime.fromisoformat(row[0])
+    days_left = 30 - (get_moscow_time() - paid_at).days
+    return max(0, days_left)
+
+def save_chat_message(user_id: str, role: str, message: str):
+    """Сохраняет сообщение в историю чата"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT INTO chat_history (user_id, role, message)
+        VALUES (?, ?, ?)
+    """, (user_id, role, message))
+    conn.commit()
+    conn.close()
+
+def get_chat_history(user_id: str, limit: int = 10) -> list:
+    """Возвращает последние сообщения чата"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT role, message FROM chat_history 
+        WHERE user_id = ? 
+        ORDER BY created_at ASC LIMIT ?
+    """, (user_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"role": r[0], "message": r[1]} for r in rows]
 
 def save_pending_payment(user_id: str, payment_id: str):
     conn = sqlite3.connect(DB_PATH)
@@ -441,16 +575,15 @@ async def send_file_message(chat_id: str, text: str, file_path: str, file_type: 
 
 # === ПЛАТЕЖИ ===
 async def create_yookassa_payment(amount: int, description: str, user_id: str):
-    # Проверяем наличие ключей
     if not YKASSA_SECRET_KEY or YKASSA_SECRET_KEY == "test" or YKASSA_SECRET_KEY == "":
-        logger.error(f"YooKassa SECRET_KEY is missing or invalid! Current value: {'SET' if YKASSA_SECRET_KEY else 'MISSING'}")
+        logger.error(f"YooKassa SECRET_KEY is missing or invalid!")
         return None
     
     payment_id = f"salesplan_{user_id}_{uuid.uuid4().hex[:8]}"
     payload = {
         "amount": {"value": f"{amount}.00", "currency": "RUB"},
         "payment_method_data": {"type": "bank_card"},
-        "confirmation": {"type": "redirect", "return_url": f"https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/"},
+        "confirmation": {"type": "redirect", "return_url": f"https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/chat?user_id={user_id}"},
         "description": description,
         "capture": True,
         "metadata": {"user_id": user_id, "payment_id": payment_id},
@@ -518,6 +651,26 @@ def get_main_menu_keyboard():
         ]
     ]
 
+def get_after_payment_keyboard():
+    return [
+        [
+            {
+                "type": "callback",
+                "text": "💬 Задать вопрос AI",
+                "payload": CALLBACK_ASK_AI,
+                "intent": "default"
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "🏆 Челлендж 7 дней",
+                "payload": CALLBACK_CHALLENGE,
+                "intent": "default"
+            }
+        ]
+    ]
+
 def get_survey_keyboard(question_index: int):
     if question_index >= len(SURVEY_QUESTIONS):
         return None
@@ -539,19 +692,55 @@ def get_payment_keyboard(confirmation_url: str):
         [
             {
                 "type": "link",
-                "text": "💳 Оплатить 490 ₽",
+                "text": "💳 Оплатить 1490 ₽",
                 "url": confirmation_url
             }
         ]
     ]
 
-def get_download_keyboard():
+def get_chat_keyboard():
     return [
         [
             {
                 "type": "callback",
-                "text": "📥 Скачать план",
-                "payload": CALLBACK_DOWNLOAD_REPORT,
+                "text": "💬 Задать вопрос",
+                "payload": CALLBACK_ASK_AI,
+                "intent": "default"
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "🏆 Мой челлендж",
+                "payload": CALLBACK_PROGRESS,
+                "intent": "default"
+            }
+        ]
+    ]
+
+def get_challenge_keyboard():
+    return [
+        [
+            {
+                "type": "callback",
+                "text": "📋 Получить задание",
+                "payload": CALLBACK_TASK,
+                "intent": "default"
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "✅ Выполнил задание",
+                "payload": CALLBACK_DONE,
+                "intent": "default"
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "📊 Мой прогресс",
+                "payload": CALLBACK_PROGRESS,
                 "intent": "default"
             }
         ]
@@ -567,6 +756,714 @@ def get_channel_subscribe_keyboard():
             }
         ]
     ]
+
+# === DEEPSEEK API ===
+async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
+    q1_map = {Q1_SERVICE: "Услугу", Q1_INFO: "Инфопродукт", Q1_CONSULT: "Консультацию", Q1_NONE: "Пока не продаю"}
+    q2_map = {Q2_LT5: "до 5000 ₽", Q2_5_20: "5000-20000 ₽", Q2_20_50: "20000-50000 ₽", Q2_50P: "более 50000 ₽"}
+    q3_map = {Q3_LT10: "менее 10", Q3_10_50: "10-50", Q3_50_200: "50-200", Q3_200P: "более 200"}
+    q4_map = {Q4_300: "300 000 ₽/мес", Q4_500: "500 000 ₽/мес", Q4_1M: "1 000 000 ₽/мес", Q4_SCALE: "масштабирование"}
+    q5_map = {Q5_YES: "да", Q5_NO: "нет", Q5_PROGRESS: "в разработке"}
+    
+    survey_info = f"""
+ДАННЫЕ О БИЗНЕСЕ:
+• Продаёт: {q1_map.get(answers.get('q1'), 'не указано')}
+• Средний чек: {q2_map.get(answers.get('q2'), 'не указано')}
+• Клиентов/мес: {q3_map.get(answers.get('q3'), 'не указано')}
+• Цель на 2026: {q4_map.get(answers.get('q4'), 'не указано')}
+• Автоворонка: {q5_map.get(answers.get('q5'), 'не указано')}
+"""
+    prompt = f"""Сделай профессиональный маркетинговый разбор онлайн-бизнеса.
+
+ДАННЫЕ О БИЗНЕСЕ:
+Название: {name}
+Описание: {description}
+{survey_info}
+
+Напиши отчет в разговорном стиле Вероники. НЕ ИСПОЛЬЗУЙ символы *, #, _, `, ~. Для списков используй просто дефис. Для заголовков используй ЗАГЛАВНЫЕ БУКВЫ.
+
+1. ОБЩАЯ ИНФОРМАЦИЯ (ниша, ЦА, оценка 0-100)
+2. АНАЛИЗ (3 сильные стороны, 3 зоны роста)
+3. РЕКОМЕНДАЦИИ (3 конкретных шага)"""
+    
+    url = "https://api.deepseek.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+    data = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "Ты Вероника, продюсер экспертов. Говоришь разговорно, с эмодзи, на 'ты'. НИКОГДА не используй символы *, #, _, `, ~. Только обычный текст и эмодзи."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 2000
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=120)
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+        else:
+            logger.error(f"DeepSeek error: {response.status_code}")
+            return None
+    except Exception as e:
+        logger.error(f"DeepSeek failed: {e}")
+        return None
+
+async def call_deepseek_chat(question: str, user_id: str, report_text: str, history: list) -> str:
+    """AI-ответ на вопрос пользователя с контекстом плана и истории"""
+    
+    # Формируем контекст из истории чата
+    history_text = ""
+    for msg in history[-5:]:  # последние 5 сообщений
+        role = "Пользователь" if msg["role"] == "user" else "Вероника"
+        history_text += f"{role}: {msg['message']}\n"
+    
+    prompt = f"""Ты Вероника, продюсер экспертов. Ты уже подготовила для пользователя профессиональный маркетинговый план.
+Вот план пользователя:
+{report_text[:3000]}
+
+История диалога:
+{history_text}
+
+Теперь пользователь спрашивает:
+{question}
+
+Ответь по-дружески, с эмодзи, на 'ты'. Помоги разобраться с вопросом, используя контекст плана.
+Если вопрос не связан с бизнесом, вежливо направь в тему.
+Если вопрос сложный (просит настроить рекламу, сделать воронку, написать скрипты) — напиши: 
+"🔥 Это сложная задача, лучше сделать под ключ. Оставь телефон, я свяжусь с тобой и помогу внедрить."
+"""
+    
+    url = "https://api.deepseek.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+    data = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "Ты Вероника, продюсер экспертов. Отвечаешь дружелюбно, с эмодзи, на 'ты'."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 1000
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=60)
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+        else:
+            logger.error(f"DeepSeek chat error: {response.status_code}")
+            return "Ой, что-то пошло не так. Попробуй переформулировать вопрос."
+    except Exception as e:
+        logger.error(f"DeepSeek chat failed: {e}")
+        return "Не могу ответить сейчас. Попробуй позже."
+
+async def generate_challenge_task(user_id: str, day: int, report_text: str) -> str:
+    """Генерирует задание для челленджа на основе плана пользователя"""
+    
+    prompt = f"""Ты Вероника, продюсер экспертов. У пользователя есть маркетинговый план.
+Вот его план:
+{report_text[:2000]}
+
+День {day} из 7.
+
+Придумай конкретное, выполнимое задание на сегодня, которое приблизит пользователя к внедрению плана.
+Задание должно быть:
+- Конкретным (что именно сделать)
+- Измеримым (как понять, что сделано)
+- Реалистичным (можно сделать за 15-30 минут)
+
+Напиши задание в формате:
+🎯 ЗАДАНИЕ ДЕНЬ {day}
+[текст задания]
+📝 Чек-лист:
+- пункт 1
+- пункт 2
+- пункт 3
+
+Без лишних слов, только задание."""
+    
+    url = "https://api.deepseek.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+    data = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "Ты Вероника. Пиши коротко, конкретно, с эмодзи."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.8,
+        "max_tokens": 500
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=60)
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+        else:
+            return f"🎯 ЗАДАНИЕ ДЕНЬ {day}\nНапиши 3 идеи для улучшения своего бизнеса и выбери одну для внедрения.\n📝 Чек-лист:\n- Запиши 3 идеи\n- Выбери лучшую\n- Напиши план действий"
+    except Exception as e:
+        logger.error(f"Generate task error: {e}")
+        return f"🎯 ЗАДАНИЕ ДЕНЬ {day}\nПрочитай свой маркетинговый план и найди 1 пункт, который можно сделать сегодня."
+
+# === AI ЧАТ ===
+async def ask_ai(chat_id: str, question: str, username: str = None):
+    """Обработка вопроса к AI"""
+    
+    # Проверяем доступ
+    if not has_active_access(chat_id):
+        await send_message(chat_id,
+            "⏰ Доступ к AI-чату закончился или ещё не оплачен.\n\n"
+            "Чтобы продолжить, оплати профессиональный маркетинговый план — 1490 ₽.\n\n"
+            "👇 Нажми кнопку, чтобы оплатить",
+            get_payment_keyboard("https://example.com"))  # TODO: заменить на реальную ссылку
+        return
+    
+    # Сохраняем вопрос пользователя
+    save_chat_message(chat_id, "user", question)
+    
+    # Получаем план пользователя
+    report_text = get_premium_report_text(chat_id)
+    if not report_text:
+        await send_message(chat_id, "❌ Не найден твой план. Обратись в поддержку.")
+        return
+    
+    # Получаем историю чата
+    history = get_chat_history(chat_id, 10)
+    
+    # Проверяем, сложный ли вопрос
+    hard_keywords = ["настрой", "сделай", "запусти", "воронку", "таргет", "внедрение", "помоги сделать", "напиши"]
+    is_hard = any(keyword in question.lower() for keyword in hard_keywords)
+    
+    if is_hard:
+        answer = "🔥 Это сложная задача, которую лучше сделать под ключ.\n\nОставь свой телефон, и я свяжусь с тобой, чтобы помочь внедрить всё правильно."
+        # Сохраняем заявку
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""
+            INSERT INTO implementation_leads (user_id, question, status)
+            VALUES (?, ?, 'new')
+        """, (chat_id, question))
+        conn.commit()
+        conn.close()
+        await send_notification(ADMIN_CHAT_ID, f"📞 НОВАЯ ЗАЯВКА НА ВНЕДРЕНИЕ\n\nПользователь: {chat_id}\nВопрос: {question}")
+    else:
+        # Отправляем в DeepSeek
+        await send_message(chat_id, "🤔 Думаю...", None)
+        answer = await call_deepseek_chat(question, chat_id, report_text, history)
+    
+    # Сохраняем ответ
+    save_chat_message(chat_id, "assistant", answer)
+    
+    # Отправляем ответ
+    await send_message(chat_id, answer, get_chat_keyboard())
+
+# === ЧЕЛЛЕНДЖ ===
+async def start_or_continue_challenge(chat_id: str):
+    """Начинает или продолжает челлендж"""
+    
+    # Проверяем, есть ли активный челлендж
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT id, current_day, tasks_completed, status FROM challenges
+        WHERE user_id = ? AND status = 'active'
+        ORDER BY start_date DESC LIMIT 1
+    """, (chat_id,))
+    challenge = cursor.fetchone()
+    
+    if challenge:
+        # Продолжаем существующий
+        challenge_id, current_day, tasks_completed, status = challenge
+        days_left = 7 - current_day
+        await send_message(chat_id,
+            f"🏆 Твой челлендж в процессе!\n\n"
+            f"📅 День {current_day} из 7\n"
+            f"✅ Выполнено заданий: {tasks_completed}\n"
+            f"⏳ Осталось дней: {days_left}\n\n"
+            f"👇 Что хочешь сделать?",
+            get_challenge_keyboard())
+    else:
+        # Начинаем новый
+        cursor = conn.execute("""
+            INSERT INTO challenges (user_id, current_day, tasks_completed, status)
+            VALUES (?, 1, 0, 'active')
+        """, (chat_id,))
+        challenge_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        
+        report_text = get_premium_report_text(chat_id)
+        task_text = await generate_challenge_task(chat_id, 1, report_text)
+        
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""
+            INSERT INTO challenge_tasks (challenge_id, day_number, task_text)
+            VALUES (?, ?, ?)
+        """, (challenge_id, 1, task_text))
+        conn.commit()
+        conn.close()
+        
+        await send_message(chat_id,
+            f"🏆 ПОЕХАЛИ! Челлендж «7 дней внедрения» начался!\n\n"
+            f"{task_text}\n\n"
+            f"👇 Когда сделаешь — нажми кнопку «Выполнил задание»",
+            get_challenge_keyboard())
+
+async def get_current_task(chat_id: str):
+    """Получает текущее задание"""
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT c.id, c.current_day, ct.task_text, ct.is_completed
+        FROM challenges c
+        LEFT JOIN challenge_tasks ct ON c.id = ct.challenge_id AND c.current_day = ct.day_number
+        WHERE c.user_id = ? AND c.status = 'active'
+        ORDER BY c.start_date DESC LIMIT 1
+    """, (chat_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        await send_message(chat_id, "❌ У тебя нет активного челленджа. Напиши /challenge чтобы начать.")
+        return
+    
+    challenge_id, current_day, task_text, is_completed = row
+    
+    if is_completed:
+        await send_message(chat_id,
+            f"✅ Задание дня {current_day} уже выполнено!\n\n"
+            f"Завтра будет новое задание. Продолжай в том же духе! 💪")
+    else:
+        await send_message(chat_id,
+            f"📋 ТВОЁ ЗАДАНИЕ НА ДЕНЬ {current_day}\n\n{task_text}\n\n"
+            f"👇 Когда сделаешь — нажми кнопку «Выполнил задание»",
+            get_challenge_keyboard())
+
+async def mark_task_done(chat_id: str):
+    """Отмечает задание выполненным"""
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT c.id, c.current_day, c.tasks_completed
+        FROM challenges c
+        WHERE c.user_id = ? AND c.status = 'active'
+        ORDER BY c.start_date DESC LIMIT 1
+    """, (chat_id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        conn.close()
+        await send_message(chat_id, "❌ У тебя нет активного челленджа.")
+        return
+    
+    challenge_id, current_day, tasks_completed = row
+    
+    # Отмечаем задание выполненным
+    conn.execute("""
+        UPDATE challenge_tasks SET is_completed = 1, completed_at = CURRENT_TIMESTAMP
+        WHERE challenge_id = ? AND day_number = ?
+    """, (challenge_id, current_day))
+    
+    tasks_completed += 1
+    
+    if current_day >= 7:
+        # Челлендж завершён
+        conn.execute("""
+            UPDATE challenges SET status = 'completed', tasks_completed = ?
+            WHERE id = ?
+        """, (tasks_completed, challenge_id))
+        conn.commit()
+        conn.close()
+        
+        await send_message(chat_id,
+            f"🎉 ПОЗДРАВЛЯЮ! Ты прошёл челлендж «7 дней внедрения»!\n\n"
+            f"✅ Выполнено заданий: {tasks_completed} из 7\n\n"
+            f"🔥 Хочешь, чтобы я помогла внедрить всё под ключ? Напиши — сделаем скидку!")
+    else:
+        # Переходим к следующему дню
+        new_day = current_day + 1
+        conn.execute("""
+            UPDATE challenges SET current_day = ?, tasks_completed = ?
+            WHERE id = ?
+        """, (new_day, tasks_completed, challenge_id))
+        
+        # Генерируем задание на следующий день
+        report_text = get_premium_report_text(chat_id)
+        task_text = await generate_challenge_task(chat_id, new_day, report_text)
+        
+        conn.execute("""
+            INSERT INTO challenge_tasks (challenge_id, day_number, task_text)
+            VALUES (?, ?, ?)
+        """, (challenge_id, new_day, task_text))
+        conn.commit()
+        conn.close()
+        
+        await send_message(chat_id,
+            f"✅ Отлично! Задание дня {current_day} выполнено!\n\n"
+            f"🏆 Прогресс: {tasks_completed} заданий сделано\n\n"
+            f"📋 Твоё задание на день {new_day}:\n\n{task_text}\n\n"
+            f"👇 Продолжай в том же духе!",
+            get_challenge_keyboard())
+
+async def show_progress(chat_id: str):
+    """Показывает прогресс челленджа"""
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT c.current_day, c.tasks_completed, 
+               GROUP_CONCAT(ct.day_number || '|' || ct.is_completed) as tasks_status
+        FROM challenges c
+        LEFT JOIN challenge_tasks ct ON c.id = ct.challenge_id
+        WHERE c.user_id = ? AND c.status = 'active'
+        GROUP BY c.id
+        ORDER BY c.start_date DESC LIMIT 1
+    """, (chat_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        await send_message(chat_id, "❌ У тебя нет активного челленджа. Напиши /challenge чтобы начать.")
+        return
+    
+    current_day, tasks_completed, tasks_status = row
+    
+    # Создаём визуальный прогресс
+    progress_bar = ""
+    for i in range(1, 8):
+        if i < current_day:
+            progress_bar += "✅ "
+        elif i == current_day:
+            progress_bar += "🟡 "
+        else:
+            progress_bar += "⬜ "
+    
+    await send_message(chat_id,
+        f"🏆 ТВОЙ ПРОГРЕСС В ЧЕЛЛЕНДЖЕ\n\n"
+        f"{progress_bar}\n\n"
+        f"📅 День {current_day} из 7\n"
+        f"✅ Выполнено заданий: {tasks_completed}\n"
+        f"🎯 Осталось дней: {7 - current_day}\n\n"
+        f"Продолжай выполнять задания — каждый шаг приближает тебя к результату! 💪",
+        get_challenge_keyboard())
+
+# === СТРАНИЦА ЧАТА ===
+HTML_CHAT = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>AI Чат | Salesplan</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, sans-serif;
+            background: #f5f5f7;
+            color: #1d1d1f;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            background: #fff;
+            padding: 16px 20px;
+            border-bottom: 1px solid #e5e5e5;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+        }
+        .days-left {
+            font-size: 14px;
+            color: #007aff;
+            margin-top: 4px;
+        }
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .message {
+            max-width: 85%;
+            padding: 12px 16px;
+            border-radius: 20px;
+            font-size: 15px;
+            line-height: 1.4;
+        }
+        .message.user {
+            background: #007aff;
+            color: white;
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+        }
+        .message.assistant {
+            background: #e5e5ea;
+            color: #1d1d1f;
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+        }
+        .message.assistant pre {
+            background: #fff;
+            padding: 8px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 12px;
+            margin-top: 8px;
+        }
+        .input-container {
+            background: #fff;
+            padding: 12px 20px;
+            border-top: 1px solid #e5e5e5;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .input-container input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid #ccc;
+            border-radius: 25px;
+            font-size: 16px;
+            font-family: inherit;
+            outline: none;
+        }
+        .input-container input:focus {
+            border-color: #007aff;
+        }
+        .input-container button {
+            background: #007aff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .input-container button:hover {
+            background: #005fc5;
+            transform: scale(1.02);
+        }
+        .input-container button:disabled {
+            background: #ccc;
+            transform: none;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #e5e5e5;
+            border-top-color: #007aff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .plan-message {
+            background: #e8f0fe;
+            border-left: 3px solid #007aff;
+        }
+        @media (max-width: 700px) {
+            .message {
+                max-width: 90%;
+            }
+            .input-container input {
+                font-size: 14px;
+            }
+            .input-container button {
+                padding: 10px 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>💬 AI Чат с Вероникой</h1>
+        <div class="days-left" id="daysLeft">Загрузка...</div>
+    </div>
+    
+    <div class="chat-container" id="chatContainer">
+        <div class="message assistant plan-message">
+            📄 <strong>Твой план готов!</strong><br><br>
+            <div id="planText">Загрузка плана...</div>
+        </div>
+        <div class="message assistant">
+            ⬆️ План закреплён вверху. Задавай вопросы ниже — AI поможет разобраться.
+        </div>
+    </div>
+    
+    <div class="input-container">
+        <input type="text" id="questionInput" placeholder="Задай вопрос о своём бизнесе..." autocomplete="off">
+        <button id="sendBtn" onclick="sendQuestion()">Отправить</button>
+    </div>
+
+    <script>
+        const user_id = "{user_id}";
+        const chatContainer = document.getElementById('chatContainer');
+        const questionInput = document.getElementById('questionInput');
+        const sendBtn = document.getElementById('sendBtn');
+        
+        let isLoading = false;
+        
+        // Загрузка дней доступа
+        async function loadDaysLeft() {
+            const res = await fetch(`/api/days-left?user_id=${user_id}`);
+            const data = await res.json();
+            document.getElementById('daysLeft').innerHTML = `⏰ Осталось дней AI-доступа: ${data.days_left}`;
+        }
+        
+        // Загрузка плана
+        async function loadPlan() {
+            const res = await fetch(`/api/premium-plan?user_id=${user_id}`);
+            const data = await res.json();
+            if (data.plan) {
+                document.getElementById('planText').innerHTML = data.plan.replace(/\n/g, '<br>');
+            } else {
+                document.getElementById('planText').innerHTML = 'План не найден. Обратись в поддержку.';
+            }
+        }
+        
+        // Загрузка истории чата
+        async function loadHistory() {
+            const res = await fetch(`/api/chat-history?user_id=${user_id}`);
+            const data = await res.json();
+            
+            for (const msg of data.history) {
+                addMessage(msg.message, msg.role);
+            }
+        }
+        
+        function addMessage(text, role) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            messageDiv.innerHTML = text.replace(/\n/g, '<br>');
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+        
+        async function sendQuestion() {
+            const question = questionInput.value.trim();
+            if (!question || isLoading) return;
+            
+            isLoading = true;
+            sendBtn.disabled = true;
+            sendBtn.innerHTML = '<span class="loading"></span>';
+            
+            // Показываем вопрос пользователя
+            addMessage(question, 'user');
+            questionInput.value = '';
+            
+            // Отправляем запрос
+            const res = await fetch('/api/ask', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: user_id, question: question })
+            });
+            const data = await res.json();
+            
+            // Показываем ответ
+            addMessage(data.answer, 'assistant');
+            
+            isLoading = false;
+            sendBtn.disabled = false;
+            sendBtn.innerHTML = 'Отправить';
+        }
+        
+        questionInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendQuestion();
+        });
+        
+        loadDaysLeft();
+        loadPlan();
+        loadHistory();
+    </script>
+</body>
+</html>
+"""
+
+# === ЭНДПОИНТЫ ===
+@app.get("/chat")
+async def chat_page(user_id: str):
+    """Страница чата с AI"""
+    
+    # Проверяем доступ
+    if not has_active_access(user_id):
+        # Перенаправляем на диагностику или оплату
+        return RedirectResponse(url=f"/payment?user_id={user_id}", status_code=303)
+    
+    return HTMLResponse(content=HTML_CHAT.replace("{user_id}", user_id))
+
+@app.get("/api/days-left")
+async def api_days_left(user_id: str):
+    """API: количество оставшихся дней"""
+    days_left = get_days_left(user_id)
+    return {"days_left": days_left}
+
+@app.get("/api/premium-plan")
+async def api_premium_plan(user_id: str):
+    """API: текст премиум-плана"""
+    report_text = get_premium_report_text(user_id)
+    return {"plan": report_text or "План не найден"}
+
+@app.get("/api/chat-history")
+async def api_chat_history(user_id: str):
+    """API: история чата"""
+    history = get_chat_history(user_id, 50)
+    return {"history": history}
+
+@app.post("/api/ask")
+async def api_ask(request: Request):
+    """API: задать вопрос AI"""
+    data = await request.json()
+    user_id = data.get("user_id")
+    question = data.get("question")
+    
+    if not user_id or not question:
+        return {"answer": "Ошибка: не хватает данных"}
+    
+    # Проверяем доступ
+    if not has_active_access(user_id):
+        return {"answer": "⏰ Доступ к AI-чату закончился. Оплатите план, чтобы продолжить."}
+    
+    # Сохраняем вопрос
+    save_chat_message(user_id, "user", question)
+    
+    # Получаем план
+    report_text = get_premium_report_text(user_id)
+    if not report_text:
+        return {"answer": "❌ План не найден. Обратитесь в поддержку."}
+    
+    # Получаем историю
+    history = get_chat_history(user_id, 10)
+    
+    # Проверяем сложный вопрос
+    hard_keywords = ["настрой", "сделай", "запусти", "воронку", "таргет", "внедрение", "помоги сделать", "напиши скрипт"]
+    is_hard = any(keyword in question.lower() for keyword in hard_keywords)
+    
+    if is_hard:
+        answer = "🔥 Это сложная задача, которую лучше сделать под ключ.\n\nОставь свой телефон, и я свяжусь с тобой, чтобы помочь внедрить всё правильно."
+        # Сохраняем заявку
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""
+            INSERT INTO implementation_leads (user_id, question, status)
+            VALUES (?, ?, 'new')
+        """, (user_id, question))
+        conn.commit()
+        conn.close()
+        await send_notification(ADMIN_CHAT_ID, f"📞 НОВАЯ ЗАЯВКА НА ВНЕДРЕНИЕ\n\nПользователь: {user_id}\nВопрос: {question}")
+    else:
+        answer = await call_deepseek_chat(question, user_id, report_text, history)
+    
+    # Сохраняем ответ
+    save_chat_message(user_id, "assistant", answer)
+    
+    return {"answer": answer}
 
 # === DEEPSEEK API ===
 async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
@@ -704,7 +1601,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
     if data is None:
         data = {}
     
-    # Сохраняем username
     user_name = username if username else f"гость"
 
     if callback_data == CALLBACK_START_AUDIT:
@@ -724,19 +1620,19 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                 get_main_menu_keyboard())
             return
 
-        payment = await create_yookassa_payment(490, "План продаж", chat_id)
+        payment = await create_yookassa_payment(1490, "Профессиональный маркетинговый план", chat_id)
         if payment and payment.get("confirmation_url"):
             save_pending_payment(chat_id, payment["payment_id"])
             save_user_state(chat_id, STATE_WAITING_PAYMENT, {"payment_id": payment["payment_id"]})
             
             await send_callback_answer(callback_id,
                 f"🔍 Запускаю генерацию плана... 1-2 минуты — и всё готово.\n\n"
-                f"🔥 Твой план продаж будет содержать:\n"
+                f"🔥 Твой профессиональный маркетинговый план будет содержать:\n"
                 f"• Разбор 5 конкурентов\n"
                 f"• Анализ ЦА\n"
                 f"• Готовую воронку\n"
                 f"• План действий на месяц\n\n"
-                f"👇 Оплати 490 ₽ — и сразу скачаешь результат",
+                f"👇 Оплати 1490 ₽ — и получи доступ к AI-чату и челленджу",
                 get_payment_keyboard(payment["confirmation_url"]))
         else:
             await send_callback_answer(callback_id,
@@ -748,6 +1644,54 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
         asyncio.create_task(generate_premium_report(chat_id, biz_data["name"], biz_data["description"], form_data, report_id))
         return
 
+    if callback_data == CALLBACK_ASK_AI:
+        if has_active_access(chat_id):
+            await send_callback_answer(callback_id,
+                "💬 Напиши свой вопрос в чате:\n\n"
+                f"https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/chat?user_id={chat_id}",
+                None)
+        else:
+            await send_callback_answer(callback_id,
+                "⏰ Доступ к AI-чату закончился или ещё не оплачен.\n\n"
+                "Оплати профессиональный маркетинговый план — 1490 ₽, чтобы получить 30 дней доступа к AI и челленджу.",
+                get_main_menu_keyboard())
+        return
+
+    if callback_data == CALLBACK_CHALLENGE:
+        if has_active_access(chat_id):
+            await start_or_continue_challenge(chat_id)
+            await send_callback_answer(callback_id, "🚀 Запускаю челлендж...", None)
+        else:
+            await send_callback_answer(callback_id,
+                "⏰ Челлендж доступен только после оплаты плана.\n\n"
+                "Оплати 1490 ₽ — и получи доступ к AI-чату и 7-дневному челленджу.",
+                get_main_menu_keyboard())
+        return
+
+    if callback_data == CALLBACK_TASK:
+        if has_active_access(chat_id):
+            await get_current_task(chat_id)
+            await send_callback_answer(callback_id, "📋 Задание на сегодня:", None)
+        else:
+            await send_callback_answer(callback_id, "⏰ Доступ к челленджу только после оплаты.", get_main_menu_keyboard())
+        return
+
+    if callback_data == CALLBACK_DONE:
+        if has_active_access(chat_id):
+            await mark_task_done(chat_id)
+            await send_callback_answer(callback_id, "✅ Отлично!", None)
+        else:
+            await send_callback_answer(callback_id, "⏰ Доступ к челленджу только после оплаты.", get_main_menu_keyboard())
+        return
+
+    if callback_data == CALLBACK_PROGRESS:
+        if has_active_access(chat_id):
+            await show_progress(chat_id)
+            await send_callback_answer(callback_id, "📊 Твой прогресс:", None)
+        else:
+            await send_callback_answer(callback_id, "⏰ Доступ к челленджу только после оплаты.", get_main_menu_keyboard())
+        return
+
     if callback_data == CALLBACK_DOWNLOAD_REPORT:
         report_status = get_report_status(chat_id)
         if report_status and report_status['status'] == 'ready' and report_status['file_path']:
@@ -755,37 +1699,27 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
             if filepath.exists():
                 await send_file_message(
                     chat_id,
-                    "📄 Держи свой план продаж!",
+                    "📄 Держи свой профессиональный маркетинговый план!",
                     str(filepath),
                     "file"
                 )
                 await asyncio.sleep(2)
                 await send_message(chat_id,
-                    "🔥 Ну что, изучила план?\n\n"
-                    "Давай честно: ты сможешь всё это внедрить сама?\n\n"
-                    "Я знаю эту боль — информации много, а результата нет.\n\n"
-                    "Поэтому я предлагаю БЕСПЛАТНЫЙ 30-минутный разбор твоего плана.\n\n"
-                    "За 30 минут я:\n"
-                    "✅ Найду ТВОЁ одно действие, которое принесёт деньги прямо сейчас\n"
-                    "✅ Покажу, где теряешь клиентов\n"
-                    "✅ Дам конкретный план на неделю\n\n"
-                    "👇 Подпишись на канал и напиши мне",
-                    get_channel_subscribe_keyboard())
+                    "🔥 Отлично! Теперь у тебя есть:\n"
+                    "✅ Профессиональный маркетинговый план\n"
+                    "✅ 30 дней доступа к AI-чату\n"
+                    "✅ 7-дневный челлендж внедрения\n\n"
+                    "👇 Задавай вопросы AI или начинай челлендж",
+                    get_after_payment_keyboard())
             else:
-                await send_callback_answer(callback_id,
-                    "❌ Файл не найден. Напиши мне — поможем.",
-                    get_main_menu_keyboard())
+                await send_callback_answer(callback_id, "❌ Файл не найден.", get_main_menu_keyboard())
         else:
-            await send_callback_answer(callback_id,
-                "⏳ План ещё готовится. Обычно 1-2 минуты.\n\nКак будет готов — я пришлю уведомление.",
-                None)
+            await send_callback_answer(callback_id, "⏳ План ещё готовится. 1-2 минуты.", None)
         return
 
     if callback_data == CALLBACK_HELP:
         await send_notification(ADMIN_CHAT_ID, f"❓ Запрос помощи от {chat_id}\n⏰ {format_moscow_time()}")
-        await send_callback_answer(callback_id,
-            "✅ Запрос отправлен! Я свяжусь с тобой в ближайшее время.",
-            None)
+        await send_callback_answer(callback_id, "✅ Запрос отправлен! Я свяжусь с тобой в ближайшее время.", None)
         return
 
     if callback_data == CALLBACK_BOOK_CALL:
@@ -838,10 +1772,8 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                     save_user_state(chat_id, STATE_MENU, {})
                     return
 
-                # Убираем кнопки опросника
                 await send_callback_answer(callback_id, "🔍 Запускаю анализ...", None)
                 
-                # Анимация анализа
                 await send_analysis_animation(chat_id)
                 
                 report_text = await call_deepseek_diagnostic(
@@ -851,7 +1783,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                     log_event(chat_id, "free_report_generated")
                     save_user_state(chat_id, STATE_MENU, {})
                     
-                    # Отправляем отчёт сразу
                     max_len = 3800
                     if len(report_text) > max_len:
                         await send_message(chat_id, f"✅ Твоя диагностика:\n\n{report_text[:max_len]}", None)
@@ -859,20 +1790,18 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                     else:
                         await send_message(chat_id, f"✅ Твоя диагностика:\n\n{report_text}", None)
                     
-                    # Задержка 30 секунд перед апсейлом
                     await asyncio.sleep(30)
                     
-                    # Апсейл на платный план
                     await send_message(chat_id,
                         "🔥 Ну как тебе?\n\n"
-                        "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
-                        "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
-                        "👇 А если хочешь, чтобы я лично разобрала твой бизнес — подпишись на канал и напиши мне",
+                        "Это только бесплатная версия. Хочешь полный разбор с конкурентами, AI-чат и челлендж?\n\n"
+                        "Закажи профессиональный маркетинговый план за 1490 ₽.\n\n"
+                        "👇 Оплати сейчас — и получи 30 дней доступа к AI и челленджу",
                         [
                             [
                                 {
                                     "type": "callback",
-                                    "text": "🔥 План продаж за 490 ₽",
+                                    "text": "🔥 Профессиональный план за 1490 ₽",
                                     "payload": CALLBACK_MY_PREMIUM,
                                     "intent": "default"
                                 }
@@ -886,9 +1815,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str, u
                             ]
                         ])
                 else:
-                    await send_message(chat_id,
-                        "⚠️ Диагностика готова (по шаблону).",
-                        get_main_menu_keyboard())
+                    await send_message(chat_id, "⚠️ Диагностика готова (по шаблону).", get_main_menu_keyboard())
         return
 
 async def process_message(user_id: str, text: str, username: str = None):
@@ -896,7 +1823,6 @@ async def process_message(user_id: str, text: str, username: str = None):
     state, data = get_user_state(str(user_id))
     log_event(str(user_id), f"message: {text[:50]}")
     
-    # Сохраняем username
     user_name = username if username else f"гость"
 
     if state == STATE_MENU:
@@ -907,8 +1833,20 @@ async def process_message(user_id: str, text: str, username: str = None):
                 "Давай сделаем бесплатный аудит твоего бизнеса — 2 минуты, и узнаешь, что теряешь.",
                 get_main_menu_keyboard())
             save_user_state(str(user_id), STATE_MENU, data)
+        elif text == "/chat":
+            if has_active_access(str(user_id)):
+                await send_message(str(user_id),
+                    f"💬 Переходи в чат:\n\n"
+                    f"https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/chat?user_id={user_id}")
+            else:
+                await send_message(str(user_id), "⏰ Доступ к чату только после оплаты плана.")
+        elif text == "/challenge":
+            if has_active_access(str(user_id)):
+                await start_or_continue_challenge(str(user_id))
+            else:
+                await send_message(str(user_id), "⏰ Челлендж доступен только после оплаты плана.")
         else:
-            await send_message(str(user_id), "Используй кнопки меню или напиши /start")
+            await send_message(str(user_id), "Используй кнопки меню или команды: /start, /chat, /challenge")
         return
 
     if state == STATE_AWAITING_BUSINESS_NAME:
@@ -953,7 +1891,6 @@ async def process_message(user_id: str, text: str, username: str = None):
 
                 await send_message(str(user_id), "🔍 Запускаю анализ...", None)
                 
-                # Анимация анализа
                 await send_analysis_animation(str(user_id))
                 
                 report_text = await call_deepseek_diagnostic(biz_data["name"], biz_data["description"], answers)
@@ -961,7 +1898,6 @@ async def process_message(user_id: str, text: str, username: str = None):
                     log_event(str(user_id), "free_report_generated")
                     save_user_state(str(user_id), STATE_MENU, {})
                     
-                    # Отправляем отчёт сразу
                     max_len = 3800
                     if len(report_text) > max_len:
                         await send_message(str(user_id), f"✅ Твоя диагностика:\n\n{report_text[:max_len]}", None)
@@ -969,20 +1905,18 @@ async def process_message(user_id: str, text: str, username: str = None):
                     else:
                         await send_message(str(user_id), f"✅ Твоя диагностика:\n\n{report_text}", None)
                     
-                    # Задержка 30 секунд перед апсейлом
                     await asyncio.sleep(30)
                     
-                    # Апсейл на платный план
                     await send_message(str(user_id),
                         "🔥 Ну как тебе?\n\n"
-                        "Это только бесплатная версия. Хочешь полный разбор с конкурентами и готовым планом?\n\n"
-                        "Закажи план продаж за 490 ₽ — и получишь стратегию, которая реально работает.\n\n"
-                        "👇 А если хочешь, чтобы я лично разобрала твой бизнес — подпишись на канал и напиши мне",
+                        "Это только бесплатная версия. Хочешь полный разбор с конкурентами, AI-чат и челлендж?\n\n"
+                        "Закажи профессиональный маркетинговый план за 1490 ₽.\n\n"
+                        "👇 Оплати сейчас — и получи 30 дней доступа к AI и челленджу",
                         [
                             [
                                 {
                                     "type": "callback",
-                                    "text": "🔥 План продаж за 490 ₽",
+                                    "text": "🔥 Профессиональный план за 1490 ₽",
                                     "payload": CALLBACK_MY_PREMIUM,
                                     "intent": "default"
                                 }
@@ -996,9 +1930,7 @@ async def process_message(user_id: str, text: str, username: str = None):
                             ]
                         ])
                 else:
-                    await send_message(str(user_id),
-                        "⚠️ Диагностика готова (по шаблону).",
-                        get_main_menu_keyboard())
+                    await send_message(str(user_id), "⚠️ Диагностика готова (по шаблону).", get_main_menu_keyboard())
         return
 
     if state == STATE_WAITING_CALL:
@@ -1026,13 +1958,11 @@ async def process_message(user_id: str, text: str, username: str = None):
             "🔍 Разборы ошибок\n"
             "📝 Скрипты фраз, которые продают\n\n"
             "👇 Жми кнопку, подписывайся")
-        await send_message(str(user_id),
-            "👇 Подписывайся на канал",
-            get_channel_subscribe_keyboard())
+        await send_message(str(user_id), "👇 Подписывайся на канал", get_channel_subscribe_keyboard())
         save_user_state(str(user_id), STATE_MENU, {})
         return
 
-    await send_message(str(user_id), "Используй кнопки меню или напиши /start")
+    await send_message(str(user_id), "Используй кнопки меню или команды: /start, /chat, /challenge")
 
 # === СОЗДАНИЕ ПРИЛОЖЕНИЯ FASTAPI ===
 from contextlib import asynccontextmanager
@@ -1048,7 +1978,7 @@ app = FastAPI(title="Salesplan Bot for MAX", lifespan=lifespan)
 # === ЭНДПОИНТЫ ===
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot is running", "version": "3.0"}
+    return {"status": "Salesplan bot is running", "version": "4.0"}
 
 @app.get("/health")
 async def health():
@@ -1101,11 +2031,19 @@ async def yookassa_webhook(request: Request):
                 update_payment_status(payment_id, "succeeded")
                 clear_pending_payment(user_id)
                 
-                # Проверяем, готов ли отчёт
+                # Обновляем paid_at в reports
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute("""
+                    UPDATE reports SET paid_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND report_type = 'premium' AND status = 'ready'
+                """, (user_id,))
+                conn.commit()
+                conn.close()
+                
                 report_status = get_report_status(user_id)
                 if report_status and report_status['status'] == 'ready':
                     await send_notification(user_id,
-                        "🎉 Ура! Твой план продаж готов!\n\n"
+                        "🎉 Ура! Твой профессиональный маркетинговый план готов!\n\n"
                         "👇 Жми кнопку ниже — и забирай результат",
                         get_download_keyboard())
                 else:
@@ -1114,7 +2052,7 @@ async def yookassa_webhook(request: Request):
                         "План ещё готовится — 1-2 минуты. Я пришлю уведомление, как только всё будет готово.")
                 
                 await send_notification(ADMIN_CHAT_ID,
-                    f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {user_id}\nСумма: 490 ₽\nТовар: План продаж\n⏰ {format_moscow_time()}")
+                    f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {user_id}\nСумма: 1490 ₽\nТовар: Профессиональный маркетинговый план + AI-чат + Челлендж\n⏰ {format_moscow_time()}")
         
         return Response(status_code=200)
     except Exception as e:
