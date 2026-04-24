@@ -695,6 +695,19 @@ def get_main_menu_keyboard():
         ]
     ]
 
+def get_error_keyboard():
+    """Клавиатура для сообщений об ошибке — только кнопка помощи"""
+    return [
+        [
+            {
+                "type": "callback",
+                "text": "❓ Помощь",
+                "payload": CALLBACK_HELP,
+                "intent": "default"
+            }
+        ]
+    ]
+
 def get_survey_keyboard(question_index: int):
     if question_index >= len(SURVEY_QUESTIONS):
         return None
@@ -1163,7 +1176,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             await send_callback_answer(callback_id,
                 "❌ Ошибка при создании платежа. Попробуй позже.\n\n"
                 "👇 Если проблема повторяется — нажми «Помощь», я проверю вручную",
-                get_main_menu_keyboard())
+                get_error_keyboard())
             return
         
         report_id = save_report_request(chat_id, 'premium')
@@ -1197,7 +1210,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             await send_callback_answer(callback_id,
                 "❌ Ошибка при создании платежа. Попробуй позже.\n\n"
                 "👇 Если проблема повторяется — нажми «Помощь», я проверю вручную",
-                get_main_menu_keyboard())
+                get_error_keyboard())
             return
         
         report_id = save_report_request(chat_id, 'premium')
