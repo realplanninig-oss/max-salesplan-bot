@@ -60,7 +60,6 @@ STATE_WAITING_CALL = "waiting_call"
 STATE_WAITING_PAYMENT = "waiting_payment"
 
 # === CALLBACK DATA ===
-CALLBACK_START = "start"
 CALLBACK_AUDIT = "audit"
 CALLBACK_PREMIUM_1490 = "premium_1490"
 CALLBACK_PLAN_ONLY_490 = "plan_only_490"
@@ -604,8 +603,8 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
 
 async def send_notification_to_channel(text: str):
     """Отправка уведомления в канал MAX"""
-    if not ADMIN_CHANNEL_ID:
-        logger.error("ADMIN_CHANNEL_ID not configured")
+    if not ADMIN_CHANNEL_ID or ADMIN_CHANNEL_ID == "None":
+        logger.warning(f"ADMIN_CHANNEL_ID not configured, skipping notification. Current value: {ADMIN_CHANNEL_ID}")
         return
     
     url = f"{MAX_API_URL}/messages?channel_id={ADMIN_CHANNEL_ID}"
@@ -691,14 +690,6 @@ def get_main_menu_keyboard():
                 "type": "callback",
                 "text": "📊 Бесплатный аудит",
                 "payload": CALLBACK_AUDIT,
-                "intent": "default"
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "❓ Помощь",
-                "payload": CALLBACK_HELP,
                 "intent": "default"
             }
         ]
@@ -1127,7 +1118,8 @@ async def send_analysis_animation(chat_id: str):
         await send_message(chat_id, step, None)
         await asyncio.sleep(5)
     
-    await send_message(chat_id, "✅ Готово!", None)
+    await send_message(chat_id, "⏳ Осталось 5 секунд...", None)
+    await asyncio.sleep(5)
 
 # === ОБРАБОТЧИКИ ===
 async def process_callback(chat_id: str, callback_id: str, callback_data: str):
@@ -1429,6 +1421,9 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                     else:
                         await send_message(chat_id, f"✅ Твоя диагностика:\n\n{report_text}", None)
                     
+                    # Подсказка листать вверх
+                    await send_message(chat_id, "⬆️ Листай вверх — там твоя диагностика", None)
+                    
                     await asyncio.sleep(30)
                     
                     await send_message(chat_id,
@@ -1527,6 +1522,9 @@ async def process_message(user_id: str, text: str):
                         await send_message(str(user_id), report_text[max_len:max_len+max_len], None)
                     else:
                         await send_message(str(user_id), f"✅ Твоя диагностика:\n\n{report_text}", None)
+                    
+                    # Подсказка листать вверх
+                    await send_message(str(user_id), "⬆️ Листай вверх — там твоя диагностика", None)
                     
                     await asyncio.sleep(30)
                     
