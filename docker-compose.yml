@@ -10,5 +10,6 @@ services:
       - YKASSA_SHOP_ID
       - YKASSA_SECRET_KEY
       - YKASSA_TEST_MODE
+      - ADMIN_CHANNEL_ID
       - PORT
     restart: always
