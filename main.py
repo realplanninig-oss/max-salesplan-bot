@@ -13,8 +13,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Response, HTTPException, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Request, Response, HTTPException
 import aiohttp
 import aiofiles
 import uvicorn
@@ -23,11 +22,11 @@ load_dotenv()
 
 # === КОНФИГУРАЦИЯ ===
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1310983")
 YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY")
-YKASSA_TEST_MODE = os.getenv("YKASSA_TEST_MODE", "true").lower() == "true"
+YKASSA_TEST_MODE = os.getenv("YKASSA_TEST_MODE", "false").lower() == "true"
 
 MAX_API_URL = "https://platform-api.max.ru"
 YKASSA_API_URL = "https://api.yookassa.ru/v3"
@@ -239,7 +238,6 @@ def init_db():
 
 init_db()
 
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 def get_user_state(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute("SELECT state, data FROM user_state WHERE user_id = ?", (user_id,))
@@ -417,8 +415,8 @@ def get_active_challenge(user_id: str):
 def start_new_challenge(user_id: str) -> int:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute("""
-        INSERT INTO challenges (user_id, current_day, tasks_completed, status)
-        VALUES (?, 1, 0, 'active')
+        INSERT INTO challenges (user_id, start_date, current_day, tasks_completed, status)
+        VALUES (?, CURRENT_TIMESTAMP, 1, 0, 'active')
     """, (user_id,))
     challenge_id = cursor.lastrowid
     conn.commit()
@@ -427,15 +425,13 @@ def start_new_challenge(user_id: str) -> int:
 
 def renew_challenge(user_id: str) -> int:
     conn = sqlite3.connect(DB_PATH)
-    # Деактивируем старый челлендж
     conn.execute("""
-        UPDATE challenges SET status = 'expired'
+        UPDATE challenges SET status = 'completed'
         WHERE user_id = ? AND status = 'active'
     """, (user_id,))
-    # Создаём новый
     cursor = conn.execute("""
-        INSERT INTO challenges (user_id, current_day, tasks_completed, status, renewed_at)
-        VALUES (?, 1, 0, 'active', CURRENT_TIMESTAMP)
+        INSERT INTO challenges (user_id, start_date, current_day, tasks_completed, status, renewed_at)
+        VALUES (?, CURRENT_TIMESTAMP, 1, 0, 'active', CURRENT_TIMESTAMP)
     """, (user_id,))
     challenge_id = cursor.lastrowid
     conn.commit()
@@ -606,24 +602,20 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
                 logger.error(f"send_callback_answer failed: {resp.status} - {error_text}")
             return await resp.json()
 
-async def send_notification(chat_id: str, text: str, keyboard: list = None):
-    url = f"{MAX_API_URL}/messages?user_id={chat_id}"
+async def send_notification_to_channel(text: str):
+    """Отправка уведомления в канал MAX"""
+    if not ADMIN_CHANNEL_ID:
+        logger.error("ADMIN_CHANNEL_ID not configured")
+        return
+    
+    url = f"{MAX_API_URL}/messages?channel_id={ADMIN_CHANNEL_ID}"
     payload = {"text": text}
-    if keyboard:
-        payload["attachments"] = [
-            {
-                "type": "inline_keyboard",
-                "payload": {
-                    "buttons": keyboard
-                }
-            }
-        ]
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
                 error_text = await resp.text()
-                logger.error(f"send_notification failed: {resp.status} - {error_text}")
+                logger.error(f"send_notification_to_channel failed: {resp.status} - {error_text}")
             return await resp.json()
 
 # === ПЛАТЕЖИ ===
@@ -692,18 +684,6 @@ async def check_yookassa_payment(payment_id: str):
                 return None
 
 # === КЛАВИАТУРЫ ===
-def get_start_keyboard():
-    return [
-        [
-            {
-                "type": "callback",
-                "text": "🚀 Старт",
-                "payload": CALLBACK_START,
-                "intent": "default"
-            }
-        ]
-    ]
-
 def get_main_menu_keyboard():
     return [
         [
@@ -711,6 +691,14 @@ def get_main_menu_keyboard():
                 "type": "callback",
                 "text": "📊 Бесплатный аудит",
                 "payload": CALLBACK_AUDIT,
+                "intent": "default"
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "❓ Помощь",
+                "payload": CALLBACK_HELP,
                 "intent": "default"
             }
         ]
@@ -862,18 +850,6 @@ def get_consultation_keyboard():
         ]
     ]
 
-def get_help_keyboard():
-    return [
-        [
-            {
-                "type": "callback",
-                "text": "❓ Помощь",
-                "payload": CALLBACK_HELP,
-                "intent": "default"
-            }
-        ]
-    ]
-
 def get_implementation_keyboard():
     return [
         [
@@ -909,10 +885,9 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
 Описание: {description}
 {survey_info}
 
-Напиши отчет в следующем стиле:
-- Глубокий, мудрый, с оттенком восточной философии
+Напиши отчет в деловом, практичном стиле:
 - Уверенный, прямой, без воды
-- Используй метафоры и жизненные примеры
+- Используй конкретные примеры
 - Обращайся на "ты"
 - НЕ используй символы форматирования (*, #, _, `, ~)
 - Для списков используй просто дефис (-)
@@ -923,7 +898,7 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
 1. ОБЩАЯ КАРТИНА
    - Ниша бизнеса — где ты находишься
    - Целевая аудитория — кто они, чего хотят, что им мешает
-   - Оценка текущего состояния от 0 до 100 (будь честной)
+   - Оценка текущего состояния от 0 до 100
 
 2. СИЛЬНЫЕ СТОРОНЫ И ТОЧКИ РОСТА
    - Что уже работает (3 пункта)
@@ -932,14 +907,14 @@ async def call_deepseek_diagnostic(name: str, description: str, answers: dict):
 3. ПЕРВЫЕ ШАГИ
    - 3 конкретных действия, которые можно сделать прямо сейчас
 
-Пиши как женщина, которая прошла путь от нуля до вершин. Мудро, с юмором, но без лишних нежностей. По делу."""
+Пиши по делу, без лишних слов. Конкретно и полезно."""
     
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     data = {
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "Ты — профессиональный бизнес-консультант. Отвечаешь мудро, прямо, с примерами. Обращаешься на 'ты'."},
+            {"role": "system", "content": "Ты — профессиональный бизнес-консультант. Отвечай по делу, конкретно, без лишних слов."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
@@ -978,10 +953,9 @@ async def call_deepseek_premium_report(name: str, description: str, answers: dic
 Описание: {description}
 {survey_info}
 
-Напиши план в следующем стиле:
-- Глубокий, мудрый, практичный
+Напиши план в деловом, практичном стиле:
 - Уверенный, директивный, без воды
-- Используй метафоры, притчи, жизненные примеры
+- Используй конкретные примеры
 - Обращайся на "ты"
 - НЕ используй символы форматирования (*, #, _, `, ~)
 - Для списков используй просто дефис (-)
@@ -1015,14 +989,14 @@ async def call_deepseek_premium_report(name: str, description: str, answers: dic
    - Что делать в четвёртую
    - Ключевые точки контроля
 
-Пиши как женщина, которая построила империю с нуля. Мудро, жёстко, но справедливо. Без воды и пустых обещаний."""
+Пиши по делу, без лишних слов. Конкретно и полезно."""
     
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     data = {
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "Ты — профессиональный бизнес-консультант. Отвечаешь мудро, прямо, с примерами. Обращаешься на 'ты'."},
+            {"role": "system", "content": "Ты — профессиональный бизнес-консультант. Отвечай по делу, конкретно, без лишних слов."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
@@ -1045,7 +1019,7 @@ async def call_deepseek_chat(question: str, user_id: str, report_text: str, hist
         role = "Пользователь" if msg["role"] == "user" else "Вероника"
         history_text += f"{role}: {msg['message']}\n"
     
-    prompt = f"""Ты — профессиональный бизнес-консультант в мудром стиле.
+    prompt = f"""Ты — профессиональный бизнес-консультант.
 
 Вот маркетинговый план пользователя:
 {report_text[:3000]}
@@ -1056,10 +1030,9 @@ async def call_deepseek_chat(question: str, user_id: str, report_text: str, hist
 Теперь пользователь спрашивает:
 {question}
 
-Твоя задача — ответить в следующем стиле:
-- Глубоко, мудро, с жизненными примерами
-- Уверенно, прямо, иногда жёстко — но по делу
-- Используй метафоры, притчи, примеры из жизни
+Твоя задача — ответить в деловом, практичном стиле:
+- Уверенно, прямо, по делу
+- Конкретные рекомендации
 - Обращайся на "ты"
 - Без воды, без пустых обещаний
 
@@ -1071,14 +1044,14 @@ async def call_deepseek_chat(question: str, user_id: str, report_text: str, hist
 
 Если вопрос не по бизнесу — мягко направь в нужное русло.
 
-Пиши как женщина, которая прошла путь от нуля до вершин. Говори то, что думаешь. Но всегда помогай."""
+Пиши по делу, без лишних слов. Конкретно и полезно."""
     
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     data = {
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "Ты — мудрый бизнес-консультант. Отвечаешь глубоко, прямо, с примерами. Обращаешься на 'ты'."},
+            {"role": "system", "content": "Ты — профессиональный бизнес-консультант. Отвечай по делу, конкретно, без лишних слов."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
@@ -1095,15 +1068,14 @@ async def call_deepseek_chat(question: str, user_id: str, report_text: str, hist
         return "Не могу ответить сейчас. Попробуй позже."
 
 async def generate_challenge_task(user_id: str, day: int, report_text: str) -> str:
-    prompt = f"""Ты — профессиональный бизнес-наставник в мудром, восточном стиле.
+    prompt = f"""Ты — профессиональный бизнес-наставник.
 
 Вот маркетинговый план пользователя:
 {report_text[:2000]}
 
 День {day} из 7.
 
-Придумай задание в следующем стиле:
-- Мудро, с жизненной мудростью
+Придумай задание в деловом, практичном стиле:
 - Конкретно, выполнимо, измеримо
 - С вызовом, но без давления
 - НЕ используй символы форматирования
@@ -1128,7 +1100,7 @@ async def generate_challenge_task(user_id: str, day: int, report_text: str) -> s
     data = {
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "Ты — мудрый бизнес-наставник. Даёшь чёткие, выполнимые задания."},
+            {"role": "system", "content": "Ты — профессиональный бизнес-наставник. Давай чёткие, выполнимые задания."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.8,
@@ -1146,42 +1118,21 @@ async def generate_challenge_task(user_id: str, day: int, report_text: str) -> s
 
 async def send_analysis_animation(chat_id: str):
     steps = [
-        "🔄 Анализируем нишу — кто твои клиенты и где они тусуются\n\n⏳ 1/4",
-        "🔄 Изучаем целевую аудиторию — что они хотят на самом деле\n\n⏳ 2/4",
-        "🔄 Ищем точки роста — где ты теряешь деньги\n\n⏳ 3/4",
-        "🔄 Формируем рекомендации — что делать прямо сейчас\n\n⏳ 4/4"
+        "🔄 Анализируем бизнес...\n\n⏳ 1/3",
+        "🔄 Изучаем целевую аудиторию...\n\n⏳ 2/3",
+        "🔄 Формируем рекомендации...\n\n⏳ 3/3"
     ]
     
     for step in steps:
         await send_message(chat_id, step, None)
-        await asyncio.sleep(8)
+        await asyncio.sleep(5)
     
-    await send_message(chat_id, "⏳ Осталось 5 секунд...", None)
-    await asyncio.sleep(5)
+    await send_message(chat_id, "✅ Готово!", None)
 
 # === ОБРАБОТЧИКИ ===
 async def process_callback(chat_id: str, callback_id: str, callback_data: str):
     state, data = get_user_state(chat_id)
     log_event(chat_id, f"callback_{callback_data}")
-
-    if callback_data == CALLBACK_START:
-        await send_callback_answer(callback_id,
-            "👋 Привет! Я Вероника, продюсер экспертов.\n\n"
-            "Что умеет этот бот?\n\n"
-            "✅ 1 минута — бесплатный аудит твоего онлайн-бизнеса\n"
-            "✅ 3 минуты — профессиональный маркетинговый план\n"
-            "✅ 30 дней — доступ к AI-чату с поддержкой при внедрении\n"
-            "✅ 7 дней — челлендж внедрения\n\n"
-            "За 8 лет помогла десяткам специалистов запустить онлайн-продажи.\n\n"
-            "🇨🇳 Эксперт по китайскому      🧠 Психолог Елена\n"
-            "без блога, таргет и бот        7 клиентов за 2 недели\n"
-            "+120 000 ₽ за 2 недели         с 0 до 180 000 ₽\n\n"
-            "🌊 Мастер Фен Шуй               🏫 Онлайн-школа\n"
-            "первый запуск                   марафон в ВК за 2 недели\n"
-            "+195 000 ₽                      +2 000 000 ₽\n\n"
-            "👇 Жми кнопку, начнём",
-            get_main_menu_keyboard())
-        return
 
     if callback_data == CALLBACK_AUDIT:
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {"answers": {}, "survey_step": 0})
@@ -1220,7 +1171,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             await send_callback_answer(callback_id,
                 "❌ Ошибка при создании платежа. Попробуй позже.\n\n"
                 "👇 Если проблема повторяется — нажми «Помощь», я проверю вручную",
-                get_help_keyboard())
+                get_main_menu_keyboard())
             return
         
         report_id = save_report_request(chat_id, 'premium')
@@ -1254,7 +1205,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             await send_callback_answer(callback_id,
                 "❌ Ошибка при создании платежа. Попробуй позже.\n\n"
                 "👇 Если проблема повторяется — нажми «Помощь», я проверю вручную",
-                get_help_keyboard())
+                get_main_menu_keyboard())
             return
         
         report_id = save_report_request(chat_id, 'premium')
@@ -1268,19 +1219,11 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 "Что тебя интересует? Я на связи 24/7.",
                 None)
         else:
-            days_left = get_ai_days_left(chat_id)
-            if days_left == 0:
-                await send_callback_answer(callback_id,
-                    "⏰ 30 дней прошло. За это время ты могла многое сделать.\n\n"
-                    "Рекомендую заново пройти диагностику — у тебя новый уровень бизнеса, и план нужно обновить.\n\n"
-                    "👇 Пройди диагностику за 2 минуты",
-                    get_main_menu_keyboard())
-            else:
-                await send_callback_answer(callback_id,
-                    "⏰ Доступ к AI-чату закончился.\n\n"
-                    "Рекомендую заново пройти диагностику — у тебя новый уровень бизнеса, и план нужно обновить.\n\n"
-                    "👇 Пройди диагностику за 2 минуты",
-                    get_main_menu_keyboard())
+            await send_callback_answer(callback_id,
+                "⏰ 30 дней прошло. За это время ты могла многое сделать.\n\n"
+                "Рекомендую заново пройти диагностику — у тебя новый уровень бизнеса, и план нужно обновить.\n\n"
+                "👇 Пройди диагностику за 2 минуты",
+                get_main_menu_keyboard())
         return
 
     if callback_data == CALLBACK_CHALLENGE_TASK:
@@ -1426,7 +1369,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         return
 
     if callback_data == CALLBACK_HELP:
-        await send_notification(ADMIN_CHAT_ID, f"❓ Запрос помощи от {chat_id}\n⏰ {format_moscow_time()}")
+        await send_notification_to_channel(f"❓ Запрос помощи\n\nПользователь: {chat_id}\n⏰ {format_moscow_time()}")
         await send_callback_answer(callback_id,
             "✅ Запрос отправлен! Я свяжусь с тобой в ближайшее время.",
             None)
@@ -1482,7 +1425,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                     max_len = 3800
                     if len(report_text) > max_len:
                         await send_message(chat_id, f"✅ Твоя диагностика:\n\n{report_text[:max_len]}", None)
-                        await send_notification(chat_id, report_text[max_len:max_len+max_len])
+                        await send_message(chat_id, report_text[max_len:max_len+max_len], None)
                     else:
                         await send_message(chat_id, f"✅ Твоя диагностика:\n\n{report_text}", None)
                     
@@ -1496,7 +1439,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                         "Ты получаешь:\n"
                         "✅ Персональный профессиональный маркетинговый план продаж\n"
                         "✅ 30 дней AI-консультаций — задавай любые вопросы по плану\n"
-                        "✅ Челлендж на 7 дней с заданиями и скидкой 10% на внедрение под ключ\n"
+                        "✅ Челлендж на 7 дней с заданиями\n"
                         "✅ Доступ в закрытый канал MAX с кейсами и разборами\n\n"
                         "💰 Цена: 1 490 ₽ (вместо 4 900 ₽)\n\n"
                         "ИЛИ\n\n"
@@ -1517,26 +1460,17 @@ async def process_message(user_id: str, text: str):
     log_event(str(user_id), f"message: {text[:50]}")
 
     if state == STATE_MENU:
-        if text == "/start":
-            await send_message(str(user_id),
-                "👋 Привет! Я Вероника, продюсер экспертов.\n\n"
-                "Что умеет этот бот?\n\n"
-                "✅ 1 минута — бесплатный аудит твоего онлайн-бизнеса\n"
-                "✅ 3 минуты — профессиональный маркетинговый план\n"
-                "✅ 30 дней — доступ к AI-чату с поддержкой при внедрении\n"
-                "✅ 7 дней — челлендж внедрения\n\n"
-                "За 8 лет помогла десяткам специалистов запустить онлайн-продажи.\n\n"
-                "🇨🇳 Эксперт по китайскому      🧠 Психолог Елена\n"
-                "без блога, таргет и бот        7 клиентов за 2 недели\n"
-                "+120 000 ₽ за 2 недели         с 0 до 180 000 ₽\n\n"
-                "🌊 Мастер Фен Шуй               🏫 Онлайн-школа\n"
-                "первый запуск                   марафон в ВК за 2 недели\n"
-                "+195 000 ₽                      +2 000 000 ₽\n\n"
-                "👇 Жми кнопку, начнём",
-                get_main_menu_keyboard())
-            save_user_state(str(user_id), STATE_MENU, {})
-        else:
-            await send_message(str(user_id), "Используй кнопки меню или напиши /start", get_main_menu_keyboard())
+        # Приветствие на любое сообщение
+        await send_message(str(user_id),
+            "👋 Привет! Я Вероника, продюсер экспертов.\n\n"
+            "Что умеет этот бот?\n\n"
+            "✅ 1 мин — бесплатный аудит\n"
+            "✅ 3 мин — маркетинговый план\n"
+            "✅ 30 дней — AI-чат\n"
+            "✅ 7 дней — челлендж\n\n"
+            "👇 Жми кнопку, начнём",
+            get_main_menu_keyboard())
+        save_user_state(str(user_id), STATE_MENU, {})
         return
 
     if state == STATE_AWAITING_BUSINESS_NAME:
@@ -1590,7 +1524,7 @@ async def process_message(user_id: str, text: str):
                     max_len = 3800
                     if len(report_text) > max_len:
                         await send_message(str(user_id), f"✅ Твоя диагностика:\n\n{report_text[:max_len]}", None)
-                        await send_notification(str(user_id), report_text[max_len:max_len+max_len])
+                        await send_message(str(user_id), report_text[max_len:max_len+max_len], None)
                     else:
                         await send_message(str(user_id), f"✅ Твоя диагностика:\n\n{report_text}", None)
                     
@@ -1604,7 +1538,7 @@ async def process_message(user_id: str, text: str):
                         "Ты получаешь:\n"
                         "✅ Персональный профессиональный маркетинговый план продаж\n"
                         "✅ 30 дней AI-консультаций — задавай любые вопросы по плану\n"
-                        "✅ Челлендж на 7 дней с заданиями и скидкой 10% на внедрение под ключ\n"
+                        "✅ Челлендж на 7 дней с заданиями\n"
                         "✅ Доступ в закрытый канал MAX с кейсами и разборами\n\n"
                         "💰 Цена: 1 490 ₽ (вместо 4 900 ₽)\n\n"
                         "ИЛИ\n\n"
@@ -1614,13 +1548,19 @@ async def process_message(user_id: str, text: str):
                         "👇 Выбирай",
                         get_upsell_keyboard())
                 else:
-                    await send_message(str(user_id), "❌ Что-то пошло не так. Попробуй позже.", get_main_menu_keyboard())
+                    await send_message(str(user_id),
+                        "❌ Что-то пошло не так. Попробуй позже.",
+                        get_main_menu_keyboard())
         return
 
     if state == STATE_WAITING_CALL:
         save_implementation_lead(str(user_id), text)
-        await send_notification(ADMIN_CHAT_ID,
-            f"📞 ЗАЯВКА НА ВНЕДРЕНИЕ\n\nПользователь: {user_id}\nВопрос: {text}\n⏰ {format_moscow_time()}\n\nСсылка на чат: https://max.ru/u/{user_id}")
+        await send_notification_to_channel(
+            f"📞 ЗАЯВКА НА ВНЕДРЕНИЕ\n\n"
+            f"Пользователь: {user_id}\n"
+            f"Вопрос: {text}\n"
+            f"⏰ {format_moscow_time()}"
+        )
         await send_message(str(user_id),
             "✅ Заявка принята! Я свяжусь с тобой в ближайшее время.\n\n"
             "А пока — подпишись на канал, там готовые решения",
@@ -1647,19 +1587,27 @@ async def process_message(user_id: str, text: str):
         
         save_chat_message(str(user_id), "assistant", answer)
     else:
-        days_left = get_ai_days_left(str(user_id))
-        if days_left == 0:
-            await send_message(str(user_id),
-                "⏰ 30 дней прошло. За это время ты могла многое сделать.\n\n"
-                "Рекомендую заново пройти диагностику — у тебя новый уровень бизнеса, и план нужно обновить.\n\n"
-                "👇 Пройди диагностику за 2 минуты",
-                get_main_menu_keyboard())
-        else:
-            await send_message(str(user_id),
-                "⏰ Доступ к AI-чату закончился.\n\n"
-                "Рекомендую заново пройти диагностику — у тебя новый уровень бизнеса, и план нужно обновить.\n\n"
-                "👇 Пройди диагностику за 2 минуты",
-                get_main_menu_keyboard())
+        await send_message(str(user_id),
+            "⏰ 30 дней прошло. За это время ты могла многое сделать.\n\n"
+            "Рекомендую заново пройти диагностику — у тебя новый уровень бизнеса, и план нужно обновить.\n\n"
+            "👇 Пройди диагностику за 2 минуты",
+            get_main_menu_keyboard())
+
+async def generate_premium_report(user_id: str, name: str, description: str, answers: dict, report_id: int):
+    logger.info(f"Generating premium report for {user_id}")
+    
+    report_text = await call_deepseek_premium_report(name, description, answers)
+    
+    if report_text:
+        filename = f"premium_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        filepath = REPORTS_DIR / filename
+        async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
+            await f.write(report_text)
+        update_report_status(report_id, 'ready', str(filepath))
+        logger.info(f"Premium report generated for {user_id}")
+    else:
+        update_report_status(report_id, 'failed')
+        logger.error(f"Premium report failed for {user_id}")
 
 # === СОЗДАНИЕ ПРИЛОЖЕНИЯ FASTAPI ===
 from contextlib import asynccontextmanager
@@ -1744,13 +1692,28 @@ async def yookassa_webhook(request: Request):
                 else:
                     await send_message(user_id, "✅ Оплата прошла, спасибо!\n\nПлан ещё готовится. Страница обновится сама. Не уходи из чата.", None)
                 
-                await send_notification(ADMIN_CHAT_ID,
-                    f"💰 ПОЛУЧЕНА ОПЛАТА\n\nПользователь: {user_id}\nСумма: 1490 ₽\nТовар: Профессиональный маркетинговый план + AI-чат + Челлендж\n⏰ {format_moscow_time()}")
+                await send_notification_to_channel(
+                    f"💰 ПОЛУЧЕНА ОПЛАТА\n\n"
+                    f"Пользователь: {user_id}\n"
+                    f"Сумма: 1490 ₽\n"
+                    f"Товар: Профессиональный маркетинговый план + AI-чат + Челлендж\n"
+                    f"⏰ {format_moscow_time()}"
+                )
         
         return Response(status_code=200)
     except Exception as e:
         logger.error(f"YooKassa webhook error: {e}")
         return Response(status_code=500)
+
+@app.get("/get_channel_id")
+async def get_channel_id():
+    """Вспомогательный эндпоинт для получения ID каналов"""
+    url = f"{MAX_API_URL}/channels"
+    headers = {"Authorization": MAX_BOT_TOKEN}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as resp:
+            data = await resp.json()
+            return data
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
