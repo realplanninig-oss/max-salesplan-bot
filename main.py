@@ -1120,6 +1120,65 @@ async def yookassa_webhook(request: Request):
     except Exception as e:
         logger.error(f"YooKassa webhook error: {e}")
         return Response(status_code=500)
+        # ВРЕМЕННЫЙ КОД ДЛЯ МИГРАЦИИ — ЗАПУСТИТЬ 1 РАЗ, ПОТОМ УДАЛИТЬ
+def migrate_database():
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("ALTER TABLE reports ADD COLUMN paid_at TIMESTAMP")
+        print("✅ Колонка paid_at добавлена")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e):
+            print("⏩ Колонка paid_at уже существует")
+        else:
+            print(f"⚠️ Ошибка: {e}")
+    
+    tables = [
+        ("""CREATE TABLE IF NOT EXISTS chat_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""", "chat_history"),
+        ("""CREATE TABLE IF NOT EXISTS challenges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            current_day INTEGER DEFAULT 1,
+            tasks_completed INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'active',
+            renewed_at TIMESTAMP
+        )""", "challenges"),
+        ("""CREATE TABLE IF NOT EXISTS challenge_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            challenge_id INTEGER NOT NULL,
+            day_number INTEGER NOT NULL,
+            task_text TEXT NOT NULL,
+            is_completed BOOLEAN DEFAULT 0,
+            completed_at TIMESTAMP
+        )""", "challenge_tasks"),
+        ("""CREATE TABLE IF NOT EXISTS implementation_leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            question TEXT,
+            status TEXT DEFAULT 'new',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""", "implementation_leads")
+    ]
+    
+    for sql, name in tables:
+        try:
+            conn.execute(sql)
+            print(f"✅ Таблица {name} создана")
+        except Exception as e:
+            print(f"⚠️ Ошибка при создании {name}: {e}")
+    
+    conn.commit()
+    conn.close()
+    print("🎉 Миграция завершена!")
+
+# ЗАПУСК МИГРАЦИИ
+migrate_database()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
