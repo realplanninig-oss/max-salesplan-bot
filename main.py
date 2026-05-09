@@ -1,312 +1,4 @@
-# File: main.py — бот Salesplan для MAX (финальная версия)
-
-import asyncio
-import logging
-import sqlite3
-import os
-import json
-import requests
-import traceback
-import uuid
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Optional, Dict, Any
-
-from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Response, HTTPException
-import aiohttp
-import aiofiles
-import uvicorn
-
-load_dotenv()
-
-# === КОНФИГУРАЦИЯ ===
-MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
-ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID", "1310983")
-YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY")
-YKASSA_TEST_MODE = os.getenv("YKASSA_TEST_MODE", "false").lower() == "true"
-
-MAX_API_URL = "https://platform-api.max.ru"
-YKASSA_API_URL = "https://api.yookassa.ru/v3"
-
-if not MAX_BOT_TOKEN:
-    raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in .env")
-
-LOGS_DIR = Path("./logs")
-LOGS_DIR.mkdir(exist_ok=True)
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-    handlers=[
-        logging.FileHandler(LOGS_DIR / "salesplan.log", encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-DB_PATH = "salesplan.db"
-REPORTS_DIR = Path("./reports")
-REPORTS_DIR.mkdir(exist_ok=True)
-
-# === СОСТОЯНИЯ ===
-STATE_MENU = "menu"
-STATE_AWAITING_BUSINESS_NAME = "awaiting_business_name"
-STATE_AWAITING_BUSINESS_DESCRIPTION = "awaiting_business_description"
-STATE_SURVEY = "survey"
-STATE_WAITING_CALL = "waiting_call"
-STATE_WAITING_PAYMENT = "waiting_payment"
-
-# === CALLBACK DATA ===
-CALLBACK_AUDIT = "audit"
-CALLBACK_PREMIUM_1490 = "premium_1490"
-CALLBACK_PLAN_ONLY_490 = "plan_only_490"
-CALLBACK_BOOK_CALL = "book_call"
-CALLBACK_DOWNLOAD_REPORT = "download_report"
-CALLBACK_HELP = "help"
-CALLBACK_ASK_AI = "ask_ai"
-CALLBACK_CHALLENGE_TASK = "challenge_task"
-CALLBACK_CHALLENGE_DONE = "challenge_done"
-CALLBACK_CHALLENGE_PROGRESS = "challenge_progress"
-CALLBACK_RENEW_CHALLENGE = "renew_challenge"
-CALLBACK_RENEW_AI = "renew_ai"
-
-# === ОПРОСНИК ===
-Q1_SERVICE = "q1_service"
-Q1_INFO = "q1_info"
-Q1_CONSULT = "q1_consult"
-Q1_NONE = "q1_none"
-Q2_LT5 = "q2_lt5"
-Q2_5_20 = "q2_5_20"
-Q2_20_50 = "q2_20_50"
-Q2_50P = "q2_50p"
-Q3_LT10 = "q3_lt10"
-Q3_10_50 = "q3_10_50"
-Q3_50_200 = "q3_50_200"
-Q3_200P = "q3_200p"
-Q4_300 = "q4_300"
-Q4_500 = "q4_500"
-Q4_1M = "q4_1m"
-Q4_SCALE = "q4_scale"
-Q5_YES = "q5_yes"
-Q5_NO = "q5_no"
-Q5_PROGRESS = "q5_progress"
-
-SURVEY_QUESTIONS = [
-    {"key": "q1", "text": "Что ты продаёшь?", "options": [
-        (Q1_SERVICE, "Услугу"),
-        (Q1_INFO, "Инфопродукт"),
-        (Q1_CONSULT, "Консультацию"),
-        (Q1_NONE, "Пока не продаю"),
-    ]},
-    {"key": "q2", "text": "Средний чек (₽)", "options": [
-        (Q2_LT5, "до 5 000 ₽"),
-        (Q2_5_20, "5 000 - 20 000 ₽"),
-        (Q2_20_50, "20 000 - 50 000 ₽"),
-        (Q2_50P, "более 50 000 ₽"),
-    ]},
-    {"key": "q3", "text": "Клиентов в месяц (примерно)", "options": [
-        (Q3_LT10, "менее 10"),
-        (Q3_10_50, "10-50"),
-        (Q3_50_200, "50-200"),
-        (Q3_200P, "более 200"),
-    ]},
-    {"key": "q4", "text": "Цель на 2026", "options": [
-        (Q4_300, "300 000 ₽/мес"),
-        (Q4_500, "500 000 ₽/мес"),
-        (Q4_1M, "1 000 000 ₽/мес"),
-        (Q4_SCALE, "Масштабирование"),
-    ]},
-    {"key": "q5", "text": "Уже есть автоворонка?", "options": [
-        (Q5_YES, "Да"),
-        (Q5_NO, "Нет"),
-        (Q5_PROGRESS, "В разработке"),
-    ]},
-]
-
-# === БАЗА ДАННЫХ ===
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            payment_id TEXT UNIQUE,
-            amount INTEGER,
-            status TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            report_type TEXT NOT NULL,
-            report_text TEXT,
-            file_path TEXT,
-            status TEXT DEFAULT 'generating',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ready_at TIMESTAMP,
-            paid_at TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS business_data (
-            user_id TEXT PRIMARY KEY,
-            business_name TEXT,
-            business_description TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS forms (
-            user_id TEXT PRIMARY KEY,
-            q1 TEXT, q2 TEXT, q3 TEXT, q4 TEXT, q5 TEXT,
-            completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_state (
-            user_id TEXT PRIMARY KEY,
-            state TEXT,
-            data TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS pending_payments (
-            user_id TEXT PRIMARY KEY,
-            payment_id TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_consents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            consent_type TEXT NOT NULL,
-            consent_given_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ip TEXT,
-            user_agent TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            message TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS challenges (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            current_day INTEGER DEFAULT 1,
-            tasks_completed INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'active',
-            renewed_at TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS challenge_tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            challenge_id INTEGER NOT NULL,
-            day_number INTEGER NOT NULL,
-            task_text TEXT NOT NULL,
-            is_completed BOOLEAN DEFAULT 0,
-            completed_at TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS implementation_leads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            question TEXT,
-            status TEXT DEFAULT 'new',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-init_db()
-
-def get_user_state(user_id: str):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute("SELECT state, data FROM user_state WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return row[0], json.loads(row[1]) if row[1] else {}
-    return STATE_MENU, {}
-
-def save_user_state(user_id: str, state: str, data: dict = None):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        INSERT OR REPLACE INTO user_state (user_id, state, data, updated_at)
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-    """, (user_id, state, json.dumps(data or {}, ensure_ascii=False)))
-    conn.commit()
-    conn.close()
-
-def save_business_data(user_id: str, name: str, description: str):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        INSERT OR REPLACE INTO business_data (user_id, business_name, business_description)
-        VALUES (?, ?, ?)
-    """, (user_id, name, description))
-    conn.commit()
-    conn.close()
-
-def get_business_data(user_id: str):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute(
-        "SELECT business_name, business_description FROM business_data WHERE user_id = ?",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return {"name": row[0], "description": row[1]}
-    return None
-
-def save_form(user_id: str, answers: dict):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        INSERT OR REPLACE INTO forms (user_id, q1, q2, q3, q4, q5)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (user_id, answers.get("q1"), answers.get("q2"), answers.get("q3"),
-          answers.get("q4"), answers.get("q5")))
-    conn.commit()
-    conn.close()
-
-def get_form(user_id: str):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute(
-        "SELECT q1, q2, q3, q4, q5 FROM forms WHERE user_id = ?",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return {"q1": row[0], "q2": row[1], "q3": row[2], "q4": row[3], "q5": row[4]}
-    return None
-
-def save_report_request(user_id: str, report_type: str = 'premium') -> int:
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute("""
-        INSERT INTO reports (user_id, report_type, status)
-        VALUES (?, ?, 'generating')
-    """, (user_id, report_type))
-    report_id = cursor.lastrowid
-    conn.commit()
-    conn.close()# File: main.py — бот Salesplan для MAX (версия для единой воронки с сайтом)
+# File: main.py — бот Salesplan для MAX (с синхронизацией ID)
 
 import asyncio
 import logging
@@ -319,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, Response
 import aiohttp
 import uvicorn
 
@@ -328,7 +20,7 @@ load_dotenv()
 # === КОНФИГУРАЦИЯ ===
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID")
-SITE_API_URL = os.getenv("SITE_API_URL", "https://ваш-сайт.ru")  # URL сайта
+SITE_API_URL = os.getenv("SITE_API_URL", "https://realplanninig-oss-salesplan-web-7eb2.twc1.net")
 
 if not MAX_BOT_TOKEN:
     raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in .env")
@@ -346,9 +38,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_PATH = "salesplan_bot.db"  # Отдельная БД только для состояния бота, не для платежей
-REPORTS_DIR = Path("./reports")
-REPORTS_DIR.mkdir(exist_ok=True)
+DB_PATH = "salesplan_bot.db"
 
 # === СОСТОЯНИЯ ===
 STATE_MENU = "menu"
@@ -364,7 +54,7 @@ CALLBACK_IMPLEMENTATION = "implementation"
 CALLBACK_HELP = "help"
 CALLBACK_MENU = "menu"
 
-# === БАЗА ДАННЫХ (только для состояния бота и челленджа) ===
+# === БАЗА ДАННЫХ БОТА ===
 def init_bot_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -374,6 +64,13 @@ def init_bot_db():
             state TEXT,
             data TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_mapping (
+            max_user_id TEXT PRIMARY KEY,
+            site_user_id TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.execute("""
@@ -411,7 +108,6 @@ def init_bot_db():
 
 init_bot_db()
 
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 def get_moscow_time():
     return datetime.utcnow() + timedelta(hours=3)
 
@@ -423,7 +119,7 @@ def format_moscow_time(dt=None):
 def log_event(user_id: str, event_type: str, event_data: str = None):
     logger.info(f"Event: {event_type} | User: {user_id} | Data: {event_data}")
 
-# === БАЗА ДАННЫХ ДЛЯ СОСТОЯНИЙ ===
+# === РАБОТА С СОСТОЯНИЯМИ ===
 def get_user_state(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute("SELECT state, data FROM user_state WHERE user_id = ?", (user_id,))
@@ -442,124 +138,54 @@ def save_user_state(user_id: str, state: str, data: dict = None):
     conn.commit()
     conn.close()
 
-# === ЧЕЛЛЕНДЖ ===
-def get_active_challenge(user_id: str):
+# === МАППИНГ ID ===
+async def get_site_user_id(max_user_id: str) -> str:
+    """Получает site_user_id (UUID) по max_user_id"""
+    
+    # Сначала проверяем в локальной БД
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute("""
-        SELECT id, current_day, tasks_completed, status, start_date, renewed_at
-        FROM challenges 
-        WHERE user_id = ? AND status = 'active'
-        ORDER BY start_date DESC LIMIT 1
-    """, (user_id,))
+    cursor = conn.execute("SELECT site_user_id FROM user_mapping WHERE max_user_id = ?", (max_user_id,))
     row = cursor.fetchone()
     conn.close()
+    
     if row:
-        return {"id": row[0], "current_day": row[1], "tasks_completed": row[2], "status": row[3], "start_date": row[4], "renewed_at": row[5]}
+        return row[0]
+    
+    # Если нет — запрашиваем у сайта
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{SITE_API_URL}/api/get_or_create_user",
+                json={"max_user_id": max_user_id},
+                timeout=10
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    site_user_id = data.get("user_id")
+                    
+                    # Сохраняем в локальную БД
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO user_mapping (max_user_id, site_user_id) VALUES (?, ?)",
+                        (max_user_id, site_user_id)
+                    )
+                    conn.commit()
+                    conn.close()
+                    
+                    return site_user_id
+    except Exception as e:
+        logger.error(f"Failed to get site_user_id: {e}")
+    
     return None
-
-def start_new_challenge(user_id: str) -> int:
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute("""
-        INSERT INTO challenges (user_id, start_date, current_day, tasks_completed, status)
-        VALUES (?, CURRENT_TIMESTAMP, 1, 0, 'active')
-    """, (user_id,))
-    challenge_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return challenge_id
-
-def renew_challenge(user_id: str) -> int:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        UPDATE challenges SET status = 'completed'
-        WHERE user_id = ? AND status = 'active'
-    """, (user_id,))
-    cursor = conn.execute("""
-        INSERT INTO challenges (user_id, start_date, current_day, tasks_completed, status, renewed_at)
-        VALUES (?, CURRENT_TIMESTAMP, 1, 0, 'active', CURRENT_TIMESTAMP)
-    """, (user_id,))
-    challenge_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return challenge_id
-
-def save_challenge_task(challenge_id: int, day_number: int, task_text: str):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        INSERT INTO challenge_tasks (challenge_id, day_number, task_text)
-        VALUES (?, ?, ?)
-    """, (challenge_id, day_number, task_text))
-    conn.commit()
-    conn.close()
-
-def get_current_task(challenge_id: int, day_number: int):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute("""
-        SELECT id, task_text, is_completed FROM challenge_tasks
-        WHERE challenge_id = ? AND day_number = ?
-    """, (challenge_id, day_number))
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return {"id": row[0], "task_text": row[1], "is_completed": row[2]}
-    return None
-
-def mark_task_completed(challenge_id: int, day_number: int):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        UPDATE challenge_tasks SET is_completed = 1, completed_at = CURRENT_TIMESTAMP
-        WHERE challenge_id = ? AND day_number = ?
-    """, (challenge_id, day_number))
-    conn.execute("""
-        UPDATE challenges SET tasks_completed = tasks_completed + 1
-        WHERE id = ?
-    """, (challenge_id,))
-    conn.commit()
-    conn.close()
-
-def advance_challenge_day(challenge_id: int, new_day: int):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        UPDATE challenges SET current_day = ?
-        WHERE id = ?
-    """, (new_day, challenge_id))
-    conn.commit()
-    conn.close()
-
-def complete_challenge(challenge_id: int):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        UPDATE challenges SET status = 'completed'
-        WHERE id = ?
-    """, (challenge_id,))
-    conn.commit()
-    conn.close()
-
-def save_chat_message(user_id: str, role: str, message: str):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        INSERT INTO chat_history (user_id, role, message)
-        VALUES (?, ?, ?)
-    """, (user_id, role, message))
-    conn.commit()
-    conn.close()
-
-def get_chat_history(user_id: str, limit: int = 10) -> list:
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute("""
-        SELECT role, message FROM chat_history 
-        WHERE user_id = ? 
-        ORDER BY created_at ASC LIMIT ?
-    """, (user_id, limit))
-    rows = cursor.fetchall()
-    conn.close()
-    return [{"role": r[0], "message": r[1]} for r in rows]
 
 # === API САЙТА ===
 async def check_premium_access_via_api(user_id: str) -> bool:
-    """Проверяет через API сайта, есть ли у пользователя активный Premium-доступ на сайте"""
+    site_user_id = await get_site_user_id(user_id)
+    if not site_user_id:
+        return False
+    
     try:
-        url = f"{SITE_API_URL}/api/check_premium?user_id={user_id}"
+        url = f"{SITE_API_URL}/api/check_premium?user_id={site_user_id}"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=5) as resp:
                 if resp.status == 200:
@@ -572,9 +198,12 @@ async def check_premium_access_via_api(user_id: str) -> bool:
     return False
 
 async def download_report_from_site(user_id: str, report_type: str = "premium") -> Optional[str]:
-    """Скачивает отчёт с сайта"""
+    site_user_id = await get_site_user_id(user_id)
+    if not site_user_id:
+        return None
+    
     try:
-        url = f"{SITE_API_URL}/download/{user_id}/{report_type}"
+        url = f"{SITE_API_URL}/download/{site_user_id}/{report_type}"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as resp:
                 if resp.status == 200:
@@ -627,7 +256,6 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
             return await resp.json()
 
 async def send_notification_to_channel(text: str):
-    """Отправка уведомления в канал MAX"""
     if not ADMIN_CHANNEL_ID or ADMIN_CHANNEL_ID == "None":
         logger.warning(f"ADMIN_CHANNEL_ID not configured, skipping notification")
         return
@@ -664,7 +292,7 @@ def get_main_menu_keyboard():
         [
             {
                 "type": "callback",
-                "text": "🔥 Внедрение под ключ",
+                "text": "🎁 Бесплатный разбор 30 минут",
                 "payload": CALLBACK_IMPLEMENTATION,
                 "intent": "default"
             }
@@ -738,18 +366,9 @@ def get_implementation_keyboard():
     return [
         [
             {
-                "type": "callback",
-                "text": "📞 Оставить заявку",
-                "payload": CALLBACK_IMPLEMENTATION,
-                "intent": "default"
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "🏠 Главное меню",
-                "payload": CALLBACK_MENU,
-                "intent": "default"
+                "type": "link",
+                "text": "📅 Записаться на разбор",
+                "url": f"{SITE_API_URL}/consultation"
             }
         ]
     ]
@@ -766,8 +385,98 @@ def get_error_keyboard():
         ]
     ]
 
-# === DEEPSEEK API ДЛЯ ЧАТА ===
+# === ЧЕЛЛЕНДЖ ===
+def get_active_challenge(user_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT id, current_day, tasks_completed, status, start_date, renewed_at
+        FROM challenges 
+        WHERE user_id = ? AND status = 'active'
+        ORDER BY start_date DESC LIMIT 1
+    """, (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {"id": row[0], "current_day": row[1], "tasks_completed": row[2], "status": row[3], "start_date": row[4], "renewed_at": row[5]}
+    return None
+
+def start_new_challenge(user_id: str) -> int:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        INSERT INTO challenges (user_id, start_date, current_day, tasks_completed, status)
+        VALUES (?, CURRENT_TIMESTAMP, 1, 0, 'active')
+    """, (user_id,))
+    challenge_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return challenge_id
+
+def save_challenge_task(challenge_id: int, day_number: int, task_text: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT INTO challenge_tasks (challenge_id, day_number, task_text)
+        VALUES (?, ?, ?)
+    """, (challenge_id, day_number, task_text))
+    conn.commit()
+    conn.close()
+
+def get_current_task(challenge_id: int, day_number: int):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT id, task_text, is_completed FROM challenge_tasks
+        WHERE challenge_id = ? AND day_number = ?
+    """, (challenge_id, day_number))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {"id": row[0], "task_text": row[1], "is_completed": row[2]}
+    return None
+
+def mark_task_completed(challenge_id: int, day_number: int):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        UPDATE challenge_tasks SET is_completed = 1, completed_at = CURRENT_TIMESTAMP
+        WHERE challenge_id = ? AND day_number = ?
+    """, (challenge_id, day_number))
+    conn.execute("""
+        UPDATE challenges SET tasks_completed = tasks_completed + 1
+        WHERE id = ?
+    """, (challenge_id,))
+    conn.commit()
+    conn.close()
+
+def advance_challenge_day(challenge_id: int, new_day: int):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        UPDATE challenges SET current_day = ?
+        WHERE id = ?
+    """, (new_day, challenge_id))
+    conn.commit()
+    conn.close()
+
+def save_chat_message(user_id: str, role: str, message: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        INSERT INTO chat_history (user_id, role, message)
+        VALUES (?, ?, ?)
+    """, (user_id, role, message))
+    conn.commit()
+    conn.close()
+
+def get_chat_history(user_id: str, limit: int = 10) -> list:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT role, message FROM chat_history 
+        WHERE user_id = ? 
+        ORDER BY created_at ASC LIMIT ?
+    """, (user_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"role": r[0], "message": r[1]} for r in rows]
+
+# === DEEPSEEK API ===
 async def call_deepseek_chat(question: str, user_id: str, report_text: str, history: list) -> str:
+    import requests
     history_text = ""
     for msg in history[-5:]:
         role = "Пользователь" if msg["role"] == "user" else "Вероника"
@@ -800,7 +509,6 @@ async def call_deepseek_chat(question: str, user_id: str, report_text: str, hist
 
 Пиши по делу, без лишних слов. Конкретно и полезно."""
     
-    import requests
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {os.getenv('DEEPSEEK_API_KEY')}", "Content-Type": "application/json"}
     data = {
@@ -880,52 +588,37 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
     if callback_data == CALLBACK_MENU:
         save_user_state(chat_id, STATE_MENU, {})
         await send_callback_answer(callback_id,
-            "🏠 Главное меню\n\n"
-            "Что хочешь сделать?",
+            "🏠 Главное меню\n\nЧто хочешь сделать?",
             get_main_menu_keyboard())
         return
 
     if callback_data == CALLBACK_ASK_AI:
-        # Проверяем доступ через API сайта
         has_access = await check_premium_access_via_api(chat_id)
         
         if has_access:
             save_user_state(chat_id, STATE_AI_CHAT, {})
             await send_callback_answer(callback_id,
-                "💬 Отлично! Ты можешь задавать вопросы по плану прямо здесь.\n\n"
-                "Что тебя интересует? Я на связи 24/7.\n\n"
-                "⚠️ Если спросишь про внедрение (настроить рекламу, воронку, скрипты) — я направлю к продюсеру.",
+                "💬 Отлично! Ты можешь задавать вопросы по плану прямо здесь.\n\nЧто тебя интересует? Я на связи 24/7.\n\n⚠️ Если спросишь про внедрение — я направлю к продюсеру.",
                 None)
         else:
             await send_callback_answer(callback_id,
-                "⛔ У тебя нет активного Premium-доступа.\n\n"
-                "Чтобы получить доступ к AI-чату, челленджу и маркетинговому плану:\n\n"
-                "1️⃣ Пройди бесплатную диагностику на сайте\n"
-                "2️⃣ Оплати тариф «План + AI + Челлендж» — 1 490 ₽\n\n"
-                f"👇 Перейти на сайт",
+                "⛔ У тебя нет активного Premium-доступа.\n\nЧтобы получить доступ к AI-чату, челленджу и маркетинговому плану:\n\n1️⃣ Пройди бесплатную диагностику на сайте\n2️⃣ Оплати тариф «План + AI + Челлендж» — 1 490 ₽\n\n👇 Перейти на сайт",
                 get_main_menu_keyboard())
         return
 
     if callback_data == CALLBACK_CHALLENGE_TASK:
-        # Проверяем доступ через API сайта
         has_access = await check_premium_access_via_api(chat_id)
         
         if not has_access:
             await send_callback_answer(callback_id,
-                "⛔ Челлендж доступен только после оплаты Premium-тарифа.\n\n"
-                "1️⃣ Пройди бесплатную диагностику на сайте\n"
-                "2️⃣ Оплати тариф «План + AI + Челлендж» — 1 490 ₽\n\n"
-                f"👇 Перейти на сайт",
+                "⛔ Челлендж доступен только после оплаты Premium-тарифа.\n\n1️⃣ Пройди бесплатную диагностику на сайте\n2️⃣ Оплати тариф «План + AI + Челлендж» — 1 490 ₽\n\n👇 Перейти на сайт",
                 get_main_menu_keyboard())
             return
         
-        # Скачиваем отчёт с сайта
         report_text = await download_report_from_site(chat_id, "premium")
         if not report_text:
             await send_callback_answer(callback_id,
-                "❌ Не удалось загрузить твой маркетинговый план.\n\n"
-                "Проверь, что план готов на сайте, или обратись в поддержку.\n\n"
-                f"👇 Перейти на сайт",
+                "❌ Не удалось загрузить твой маркетинговый план.\n\nПроверь, что план готов на сайте, или обратись в поддержку.\n\n👇 Перейти на сайт",
                 get_main_menu_keyboard())
             return
         
@@ -935,20 +628,17 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             task_text = await generate_challenge_task(chat_id, 1, report_text)
             save_challenge_task(challenge_id, 1, task_text)
             await send_callback_answer(callback_id,
-                f"🏆 ПОЕХАЛИ! Челлендж «7 дней внедрения» начался!\n\n{task_text}\n\n"
-                f"👇 Когда сделаешь — нажми «Выполнил задание»",
+                f"🏆 ПОЕХАЛИ! Челлендж «7 дней внедрения» начался!\n\n{task_text}\n\n👇 Когда сделаешь — нажми «Выполнил задание»",
                 get_challenge_keyboard())
         else:
             current_task = get_current_task(challenge["id"], challenge["current_day"])
             if current_task and not current_task["is_completed"]:
                 await send_callback_answer(callback_id,
-                    f"📋 ТВОЁ ЗАДАНИЕ НА ДЕНЬ {challenge['current_day']}\n\n{current_task['task_text']}\n\n"
-                    f"👇 Когда сделаешь — нажми «Выполнил задание»",
+                    f"📋 ТВОЁ ЗАДАНИЕ НА ДЕНЬ {challenge['current_day']}\n\n{current_task['task_text']}\n\n👇 Когда сделаешь — нажми «Выполнил задание»",
                     get_challenge_keyboard())
             else:
                 await send_callback_answer(callback_id,
-                    f"🏆 Твой прогресс: день {challenge['current_day']} из 7, выполнено {challenge['tasks_completed']} заданий.\n\n"
-                    f"👇 Продолжай!",
+                    f"🏆 Твой прогресс: день {challenge['current_day']} из 7, выполнено {challenge['tasks_completed']} заданий.\n\n👇 Продолжай!",
                     get_challenge_keyboard())
         return
 
@@ -976,16 +666,11 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         
         mark_task_completed(challenge["id"], challenge["current_day"])
         
-        # Скачиваем отчёт с сайта для генерации следующего задания
         report_text = await download_report_from_site(chat_id, "premium")
         
         if challenge["current_day"] >= 7:
-            complete_challenge(challenge["id"])
             await send_callback_answer(callback_id,
-                f"🎉 ПОЗДРАВЛЯЮ! Ты прошла челлендж «7 дней внедрения»!\n\n"
-                f"✅ Выполнено заданий: {challenge['tasks_completed'] + 1} из 7\n\n"
-                f"🔥 Хочешь продолжить? Купи продление на сайте.\n\n"
-                f"👇 Перейти на сайт",
+                f"🎉 ПОЗДРАВЛЯЮ! Ты прошла челлендж «7 дней внедрения»!\n\n✅ Выполнено заданий: {challenge['tasks_completed'] + 1} из 7\n\n🔥 Хочешь продолжить? Купи продление на сайте.\n\n👇 Перейти на сайт",
                 get_main_menu_keyboard())
         else:
             new_day = challenge["current_day"] + 1
@@ -999,10 +684,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 save_challenge_task(challenge["id"], new_day, task_text)
             
             await send_callback_answer(callback_id,
-                f"✅ Отлично! Задание дня {challenge['current_day']} выполнено!\n\n"
-                f"🏆 Прогресс: {challenge['tasks_completed'] + 1} заданий сделано\n\n"
-                f"💪 ЗАДАНИЕ ДЕНЬ {new_day}\n\n{task_text}\n\n"
-                f"👇 Продолжай в том же духе!",
+                f"✅ Отлично! Задание дня {challenge['current_day']} выполнено!\n\n🏆 Прогресс: {challenge['tasks_completed'] + 1} заданий сделано\n\n💪 ЗАДАНИЕ ДЕНЬ {new_day}\n\n{task_text}\n\n👇 Продолжай в том же духе!",
                 get_challenge_keyboard())
         return
 
@@ -1031,22 +713,22 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 progress_bar += "⬜ "
         
         await send_callback_answer(callback_id,
-            f"🏆 ТВОЙ ПРОГРЕСС В ЧЕЛЛЕНДЖЕ\n\n{progress_bar}\n\n"
-            f"📅 День {challenge['current_day']} из 7\n"
-            f"✅ Выполнено заданий: {challenge['tasks_completed']}\n"
-            f"🎯 Осталось дней: {7 - challenge['current_day']}\n\n"
-            f"Продолжай выполнять задания — каждый шаг приближает тебя к результату! 💪",
+            f"🏆 ТВОЙ ПРОГРЕСС В ЧЕЛЛЕНДЖЕ\n\n{progress_bar}\n\n📅 День {challenge['current_day']} из 7\n✅ Выполнено заданий: {challenge['tasks_completed']}\n🎯 Осталось дней: {7 - challenge['current_day']}\n\nПродолжай выполнять задания — каждый шаг приближает тебя к результату! 💪",
             get_challenge_keyboard())
         return
 
     if callback_data == CALLBACK_IMPLEMENTATION:
-        save_user_state(chat_id, STATE_AWAITING_IMPLEMENTATION, {})
         await send_callback_answer(callback_id,
-            "🔥 ВНЕДРЕНИЕ ПОД КЛЮЧ\n\n"
-            "Расскажи подробнее о своём бизнесе и что нужно внедрить.\n\n"
-            "Я передам информацию продюсеру, и он свяжется с тобой.\n\n"
-            "👇 Напиши свой запрос одним сообщением",
-            None)
+            "🎁 Бесплатный 30-минутный разбор\n\n"
+            "«Я посмотрю ваш бизнес, маркетинговый план и скажу честно: "
+            "что работает, а что нет. Без воды. Без «всё хорошо». "
+            "Только факты и следующая точка входа.»\n\n"
+            "Что вынесете за 30 минут:\n"
+            "✅ Чёткий план первой продажи, которую можно сделать завтра\n"
+            "✅ Ответ, на каком этапе воронки вы теряете деньги\n"
+            "✅ Честный разбор — где вы сливаете время и бюджет впустую\n\n"
+            "👇 Перейдите на сайт и запишитесь",
+            get_implementation_keyboard())
         return
 
     if callback_data == CALLBACK_HELP:
@@ -1062,37 +744,27 @@ async def process_message(user_id: str, text: str):
 
     if state == STATE_MENU:
         await send_message(str(user_id),
-            "👋 Привет! Я Вероника, продюсер экспертов.\n\n"
-            "Что я умею:\n"
-            "✅ Отвечать на вопросы по твоему маркетинговому плану (AI-чат)\n"
-            "✅ Вести тебя 7 дней с заданиями (челлендж)\n"
-            "✅ Помочь с внедрением под ключ\n\n"
-            "👇 Чтобы получить доступ ко всем функциям — сначала оплати тариф на сайте",
+            "👋 Привет! Я Вероника, продюсер экспертов.\n\nЧто я умею:\n✅ Отвечать на вопросы по твоему маркетинговому плану (AI-чат)\n✅ Вести тебя 7 дней с заданиями (челлендж)\n✅ Помочь с внедрением под ключ\n\n👇 Чтобы получить доступ ко всем функциям — сначала оплати тариф на сайте",
             get_main_menu_keyboard())
         save_user_state(str(user_id), STATE_MENU, {})
         return
 
     if state == STATE_AI_CHAT:
-        # Проверяем доступ через API сайта
         has_access = await check_premium_access_via_api(str(user_id))
         
         if not has_access:
             await send_message(str(user_id),
-                "⛔ У тебя нет активного Premium-доступа.\n\n"
-                "Чтобы продолжить пользоваться AI-чатом, оплати тариф на сайте.\n\n"
-                f"👇 Перейти на сайт",
+                "⛔ У тебя нет активного Premium-доступа.\n\nЧтобы продолжить пользоваться AI-чатом, оплати тариф на сайте.\n\n👇 Перейти на сайт",
                 get_main_menu_keyboard())
             save_user_state(str(user_id), STATE_MENU, {})
             return
         
         save_chat_message(str(user_id), "user", text)
         
-        # Скачиваем отчёт с сайта
         report_text = await download_report_from_site(str(user_id), "premium")
         if not report_text:
             await send_message(str(user_id),
-                "❌ Не удалось загрузить твой маркетинговый план.\n\n"
-                "Проверь, что план готов на сайте, или обратись в поддержку.",
+                "❌ Не удалось загрузить твой маркетинговый план.\n\nПроверь, что план готов на сайте, или обратись в поддержку.",
                 get_error_keyboard())
             save_user_state(str(user_id), STATE_MENU, {})
             return
@@ -1122,18 +794,20 @@ async def process_message(user_id: str, text: str):
         )
         await send_message(str(user_id),
             "✅ Заявка принята! Я свяжусь с тобой в ближайшее время.\n\n"
-            "А пока — подпишись на мой канал, там готовые решения.",
+            "А пока — подпишись на мой канал, там готовые решения:\n\n"
+            "👉 https://max.ru/id781407988795_biz",
             get_main_menu_keyboard())
         save_user_state(str(user_id), STATE_MENU, {})
         return
 
-# === СОЗДАНИЕ ПРИЛОЖЕНИЯ FASTAPI ===
+# === FASTAPI ПРИЛОЖЕНИЕ ===
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Salesplan bot started (integrated with site)")
-    yield    logger.info("Salesplan bot stopped")
+    yield
+    logger.info("Salesplan bot stopped")
 
 app = FastAPI(title="Salesplan Bot for MAX", lifespan=lifespan)
 
@@ -1146,11 +820,21 @@ async def root():
 async def health():
     return {"status": "alive", "timestamp": datetime.now().isoformat()}
 
-@app.post("/webhook")
+@app.api_route("/webhook", methods=["GET", "POST", "HEAD", "OPTIONS"])
 async def webhook(request: Request):
+    if request.method == "GET":
+        logger.info(f"Webhook GET request received")
+        return Response(status_code=200)
+    
+    if request.method == "HEAD":
+        return Response(status_code=200)
+    
+    if request.method == "OPTIONS":
+        return Response(status_code=200)
+    
     try:
         payload = await request.json()
-        logger.info(f"Webhook received")
+        logger.info(f"Webhook POST received")
 
         if "message" in payload and "callback" not in payload:
             msg = payload["message"]
@@ -1171,7 +855,7 @@ async def webhook(request: Request):
         return Response(status_code=200)
     except Exception as e:
         logger.error(f"Webhook error: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return Response(status_code=200)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8001"))
