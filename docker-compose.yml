@@ -2,7 +2,7 @@ services:
   max-bot:
     build: .
     ports:
-      - "8000:8000"
+      - "8001:8001"
     environment:
       - MAX_BOT_TOKEN
       - ADMIN_CHAT_ID
@@ -11,5 +11,7 @@ services:
       - YKASSA_SECRET_KEY
       - YKASSA_TEST_MODE
       - ADMIN_CHANNEL_ID
-      - PORT
+      - PORT=8001
+      - SITE_API_URL=https://realplanninig-oss-salesplan-web-7eb2.twc1.net
+    command: python main.py
     restart: always
