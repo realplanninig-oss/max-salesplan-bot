@@ -788,7 +788,6 @@ async def process_message(user_id: str, text: str):
     if state == STATE_AWAITING_IMPLEMENTATION:
         await send_notification_to_channel(
             f"📞 ЗАЯВКА НА ВНЕДРЕНИЕ\n\n"
-            f"Пользователь# File: main.py — бот Salesplan для MAX (активация по телефону)
 
 import asyncio
 import logging
