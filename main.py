@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (версия 9.8: исправлен порядок определения app)
+# File: main.py — бот Salesplan для MAX (версия 9.9: добавлена команда /stats для просмотра запросов)
 
 import asyncio
 import logging
@@ -7,9 +7,11 @@ import os
 import json
 import re
 import traceback
+import csv
 from datetime import datetime, timedelta
 from pathlib import Path
 from contextlib import asynccontextmanager
+from io import StringIO
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response, HTTPException, Depends
@@ -28,7 +30,10 @@ REVIEWS_URL = os.getenv("REVIEWS_URL", "https://vk.ru/topic-164421538_39653658")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJp3NEa7OYZr1MKfUuC1hYDyKh2f4HFkfTXT88W3txWaBaFQmU")
 
-# Для админ-эндпоинта
+# ID продюсера, которому разрешены команды /stats (замените на свой реальный user_id в MAX)
+PRODUCER_USER_ID = os.getenv("PRODUCER_USER_ID", "24585087")  # <= ВСТАВЬТЕ СВОЙ ID
+
+# Для админ-эндпоинта (опционально, можно не использовать)
 ADMIN_USERNAME = os.getenv("BOT_ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("BOT_ADMIN_PASSWORD")
 
@@ -670,6 +675,44 @@ async def send_animation(user_id: str):
 # === ОБРАБОТЧИКИ СООБЩЕНИЙ И КОЛБЭКОВ ===
 async def process_message(user_id: str, text: str):
     state, data = get_user_state(str(user_id))
+
+    # НОВАЯ КОМАНДА /stats
+    if text == "/stats":
+        if str(user_id) != PRODUCER_USER_ID:
+            await send_message(str(user_id), "❌ У вас нет доступа к этой команде.", None)
+            return
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute("""
+            SELECT id, user_id, query_type, substr(prompt, 1, 200) as prompt_preview, created_at
+            FROM deepseek_queries
+            ORDER BY created_at DESC LIMIT 50
+        """).fetchall()
+        conn.close()
+        if not rows:
+            await send_message(str(user_id), "📭 Пока нет ни одного запроса к DeepSeek.", None)
+            return
+        # Формируем текстовую таблицу
+        lines = ["📊 *Последние 50 запросов к DeepSeek*\n"]
+        lines.append("| ID | Пользователь | Тип | Фрагмент | Дата |")
+        lines.append("|---|--------------|-----|----------|------|")
+        for row in rows:
+            qid, uid, qtype, preview, dt = row
+            preview = (preview or "").replace("\n", " ").strip()[:50]
+            lines.append(f"| {qid} | {uid} | {qtype} | {preview}... | {dt} |")
+        result_text = "\n".join(lines)
+        if len(result_text) > 3900:
+            # Отправляем как CSV
+            output = StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["id", "user_id", "type", "prompt_preview", "created_at"])
+            for row in rows:
+                writer.writerow([row[0], row[1], row[2], row[3], row[4]])
+            csv_text = output.getvalue()
+            await send_message(str(user_id), f"📊 Слишком много данных. Вот CSV:\n\n{csv_text[:3900]}", None)
+        else:
+            await send_message(str(user_id), result_text, None)
+        return
+
     if text == "/start":
         save_user_state(str(user_id), STATE_MENU, {})
         await send_message(str(user_id),
@@ -681,6 +724,7 @@ async def process_message(user_id: str, text: str):
             "👇 Начни с анкеты",
             get_main_menu_keyboard())
         return
+
     if state == STATE_AWAITING_BUSINESS_NAME:
         if len(text) > 100:
             await send_message(str(user_id), "Слишком длинное название. Напиши покороче:")
@@ -688,6 +732,7 @@ async def process_message(user_id: str, text: str):
         save_user_state(str(user_id), STATE_AWAITING_BUSINESS_DESCRIPTION, {"business_name": text})
         await send_message(str(user_id), "Ок, записала! Теперь напиши краткое описание бизнеса:")
         return
+
     if state == STATE_AWAITING_BUSINESS_DESCRIPTION:
         if len(text) > 500:
             await send_message(str(user_id), "Описание слишком длинное. Напиши покороче (до 500 символов):")
@@ -697,6 +742,7 @@ async def process_message(user_id: str, text: str):
         save_user_state(str(user_id), STATE_SURVEY, {"answers": {}, "survey_step": 0})
         await send_message(str(user_id), SURVEY_QUESTIONS[0]["text"], get_survey_keyboard(0))
         return
+
     if state == STATE_AI_CHAT:
         report = get_report(str(user_id), "premium")
         if not report or report["status"] != "ready":
@@ -719,6 +765,7 @@ async def process_message(user_id: str, text: str):
             await send_message(str(user_id), answer, get_ai_keyboard())
         save_chat_message(str(user_id), "assistant", answer)
         return
+
     if state == STATE_AWAITING_IMPLEMENTATION:
         await send_notification_to_channel(
             f"📞 ЗАЯВКА НА ВНЕДРЕНИЕ\nПользователь: {user_id}\nЗапрос: {text}\n⏰ {format_moscow_time()}"
@@ -726,6 +773,7 @@ async def process_message(user_id: str, text: str):
         await send_message(str(user_id), "✅ Заявка принята! Я свяжусь с тобой.", get_main_menu_keyboard())
         save_user_state(str(user_id), STATE_MENU, {})
         return
+
     save_user_state(str(user_id), STATE_MENU, {})
     await send_message(str(user_id), "👋 Привет! Я Вероника.\n\n👇 Нажми кнопку, чтобы начать", get_main_menu_keyboard())
 
@@ -869,7 +917,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 await send_message(chat_id, "🎯 Что хочешь сделать дальше?", get_after_plan_keyboard())
         return
 
-# === СОЗДАНИЕ ПРИЛОЖЕНИЯ FASTAPI (ПОСЛЕ ВСЕХ ФУНКЦИЙ) ===
+# === СОЗДАНИЕ ПРИЛОЖЕНИЯ FASTAPI ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Salesplan bot started")
@@ -878,7 +926,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Salesplan Bot for MAX", lifespan=lifespan)
 
-# Админ-эндпоинт
+# Опциональный админ-эндпоинт (можно оставить или удалить)
 security = HTTPBasic()
 def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
     if not ADMIN_PASSWORD:
@@ -900,7 +948,7 @@ async def admin_queries(limit: int = 100, auth: bool = Depends(verify_admin)):
 
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot is running", "version": "9.8"}
+    return {"status": "Salesplan bot is running", "version": "9.9"}
 
 @app.get("/health")
 async def health():
