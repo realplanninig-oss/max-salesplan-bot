@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (маркетинговый план + челлендж)
+# File: main.py — бот Salesplan для MAX (исправленный)
 
 import asyncio
 import logging
@@ -23,7 +23,7 @@ MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID")
 REVIEWS_URL = os.getenv("REVIEWS_URL", "https://vk.ru/topic-164421538_39653658")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-HELP_URL = "https://max.ru/u/f9LHodD0cOJ0C7zfm77-mllQpVwpwgBW8_5Z_5ddAEDVrKPZzJ4-fDRQKfE"
+HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJ0C7zfm77-mllQpVwpwgBW8_5Z_5ddAEDVrKPZzJ4-fDRQKfE")
 
 if not MAX_BOT_TOKEN:
     raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in .env")
@@ -413,30 +413,11 @@ async def call_deepseek_marketing_plan(name: str, description: str, answers: dic
 Структура плана:
 
 1. РЕАЛЬНОСТЬ
-   - Честная оценка текущей ситуации с цифрами и фактами
-
 2. КОНКУРЕНТЫ
-   - Разбор 3-5 конкурентов: кто они, чем сильны, где их слабые места
-
 3. ТВОЙ КЛИЕНТ
-   - Психологический портрет идеального клиента
-   - Его боли, страхи, истинные желания
-
 4. СИЛЬНЫЕ И СЛАБЫЕ СТОРОНЫ
-   - Что у тебя уже работает
-   - Что разрушает твои продажи
-
 5. ВОРОНКА
-   - Пошаговый путь клиента от "кто это?" до "беру!"
-   - Какие каналы использовать (только VK, Яндекс.Директ, MAX)
-   - Какие триггеры сработают
-
 6. ПЛАН НА МЕСЯЦ
-   - Что делать в первую неделю
-   - Что делать во вторую
-   - Что делать в третью
-   - Что делать в четвёртую
-   - Ключевые точки контроля
 
 Пиши по делу, без лишних слов. Конкретно и полезно."""
     
@@ -473,7 +454,7 @@ async def call_deepseek_chat(question: str, user_id: str, report_text: str, hist
 Вот маркетинговый план пользователя:
 {report_text[:3000]}
 
-История диалога (последние 5 сообщений):
+История диалога:
 {history_text}
 
 Теперь пользователь спрашивает:
@@ -484,17 +465,14 @@ async def call_deepseek_chat(question: str, user_id: str, report_text: str, hist
 - Конкретные рекомендации
 - Обращайся на "ты"
 - Без воды, без пустых обещаний
-- Не используй символы форматирования, звёздочки, скобки
+- Не используй символы форматирования
 
 Если вопрос сложный (просит настроить рекламу, сделать воронку, написать скрипты, внедрить) — скажи честно:
-
 🔥 Это задача для профессионального внедрения. Оставь заявку, я свяжусь с тобой и помогу внедрить правильно.
 
-Если вопрос простой и по бизнесу — ответь чётко, по делу, с конкретными рекомендациями, опираясь на план пользователя.
+Если вопрос простой и по бизнесу — ответь чётко, по делу.
 
-Если вопрос не по бизнесу — мягко направь в нужное русло.
-
-Пиши по делу, без лишних слов. Конкретно и полезно."""
+Пиши по делу, без лишних слов."""
     
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
@@ -519,7 +497,7 @@ async def call_deepseek_chat(question: str, user_id: str, report_text: str, hist
 
 async def generate_challenge_task(user_id: str, day: int, report_text: str) -> str:
     if not DEEPSEEK_API_KEY:
-        return f"ЗАДАНИЕ ДЕНЬ {day}\n\nИзучи свой маркетинговый план и найди 1 пункт, который можно сделать сегодня, чтобы привлечь первых клиентов.\n\nЧЕК-ЛИСТ:\n- Открой план\n- Выбери один пункт\n- Сделай его\n\nЗАЧЕМ ЭТО: Маленькие шаги ведут к большим результатам."
+        return f"ЗАДАНИЕ ДЕНЬ {day}\n\nИзучи свой маркетинговый план и найди 1 пункт, который можно сделать сегодня.\n\nЧЕК-ЛИСТ:\n- Открой план\n- Выбери один пункт\n- Сделай его\n\nЗАЧЕМ ЭТО: Маленькие шаги ведут к большим результатам."
     
     prompt = f"""Ты — профессиональный бизнес-наставник. Цель — помочь пользователю получить первых клиентов за 2 недели.
 
@@ -529,18 +507,15 @@ async def generate_challenge_task(user_id: str, day: int, report_text: str) -> s
 День {day} из 14.
 
 Придумай конкретное, выполнимое задание, которое приблизит пользователя к первой продаже.
-
-Требования:
-- Задание должно быть конкретным и измеримым
-- Должно занимать не более 2 часов
+- Задание должно занимать не более 2 часов
 - Фокус на привлечение первых клиентов
-- Не используй символы форматирования, звёздочки, скобки
+- Не используй символы форматирования
 
 Формат ответа:
 
 ЗАДАНИЕ ДЕНЬ {day}
 
-[Опиши действие одним-двумя предложениями]
+[Опиши действие]
 
 ЧЕК-ЛИСТ ДНЯ:
 - Шаг 1
@@ -548,7 +523,7 @@ async def generate_challenge_task(user_id: str, day: int, report_text: str) -> s
 - Шаг 3
 
 ПОЧЕМУ ЭТО ВАЖНО:
-[1 предложение о том, как это поможет получить клиента]"""
+[Одно предложение]"""
     
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
@@ -566,10 +541,10 @@ async def generate_challenge_task(user_id: str, day: int, report_text: str) -> s
         if response.status_code == 200:
             return response.json()["choices"][0]["message"]["content"]
         else:
-            return f"ЗАДАНИЕ ДЕНЬ {day}\n\nНапиши 3 идеи для привлечения первых клиентов и выбери одну для внедрения.\n\nЧЕК-ЛИСТ ДНЯ:\n- Запиши 3 идеи\n- Выбери лучшую\n- Составь план действий\n\nПОЧЕМУ ЭТО ВАЖНО: Первые клиенты — это деньги и уверенность."
+            return f"ЗАДАНИЕ ДЕНЬ {day}\n\nНапиши 3 идеи для привлечения первых клиентов и выбери одну для внедрения.\n\nЧЕК-ЛИСТ:\n- Запиши 3 идеи\n- Выбери лучшую\n- Составь план действий\n\nПОЧЕМУ ЭТО ВАЖНО: Первые клиенты — это деньги и уверенность."
     except Exception as e:
         logger.error(f"Generate task error: {e}")
-        return f"ЗАДАНИЕ ДЕНЬ {day}\n\nПрочитай свой маркетинговый план и найди 1 пункт, который можно сделать сегодня для привлечения клиентов.\n\nЧЕК-ЛИСТ ДНЯ:\n- Открой план\n- Выбери один пункт\n- Сделай его\n\nПОЧЕМУ ЭТО ВАЖНО: Действие сегодня = клиент завтра."
+        return f"ЗАДАНИЕ ДЕНЬ {day}\n\nПрочитай свой маркетинговый план и найди 1 пункт для привлечения клиентов.\n\nЧЕК-ЛИСТ:\n- Открой план\n- Выбери один пункт\n- Сделай его\n\nПОЧЕМУ ЭТО ВАЖНО: Действие сегодня = клиент завтра."
 
 # === КЛАВИАТУРЫ ===
 def get_main_menu_keyboard():
@@ -578,24 +553,21 @@ def get_main_menu_keyboard():
             {
                 "type": "callback",
                 "text": "📊 Пройти анкету",
-                "payload": CALLBACK_AUDIT,
-                "intent": "default"
+                "payload": CALLBACK_AUDIT
             }
         ],
         [
             {
                 "type": "callback",
                 "text": "💬 Задать вопрос AI",
-                "payload": CALLBACK_ASK_AI,
-                "intent": "default"
+                "payload": CALLBACK_ASK_AI
             }
         ],
         [
             {
                 "type": "callback",
                 "text": "🏆 Челлендж 14 дней",
-                "payload": CALLBACK_CHALLENGE_TASK,
-                "intent": "default"
+                "payload": CALLBACK_CHALLENGE_TASK
             }
         ]
     ]
@@ -606,24 +578,21 @@ def get_after_plan_keyboard():
             {
                 "type": "callback",
                 "text": "💬 Задать вопрос AI",
-                "payload": CALLBACK_ASK_AI,
-                "intent": "default"
+                "payload": CALLBACK_ASK_AI
             }
         ],
         [
             {
                 "type": "callback",
                 "text": "🏆 Начать челлендж 14 дней",
-                "payload": CALLBACK_CHALLENGE_TASK,
-                "intent": "default"
+                "payload": CALLBACK_CHALLENGE_TASK
             }
         ],
         [
             {
                 "type": "callback",
                 "text": "🔄 Пройти анкету заново",
-                "payload": CALLBACK_AUDIT,
-                "intent": "default"
+                "payload": CALLBACK_AUDIT
             }
         ]
     ]
@@ -638,8 +607,7 @@ def get_survey_keyboard(question_index: int):
             {
                 "type": "callback",
                 "text": label,
-                "payload": payload,
-                "intent": "default"
+                "payload": payload
             }
         ])
     return keyboard
@@ -650,24 +618,21 @@ def get_challenge_with_help_keyboard():
             {
                 "type": "callback",
                 "text": "📋 Получить задание",
-                "payload": CALLBACK_CHALLENGE_TASK,
-                "intent": "default"
+                "payload": CALLBACK_CHALLENGE_TASK
             }
         ],
         [
             {
                 "type": "callback",
                 "text": "✅ Выполнил задание",
-                "payload": CALLBACK_CHALLENGE_DONE,
-                "intent": "default"
+                "payload": CALLBACK_CHALLENGE_DONE
             }
         ],
         [
             {
                 "type": "callback",
                 "text": "📊 Мой прогресс",
-                "payload": CALLBACK_CHALLENGE_PROGRESS,
-                "intent": "default"
+                "payload": CALLBACK_CHALLENGE_PROGRESS
             }
         ],
         [
@@ -681,8 +646,7 @@ def get_challenge_with_help_keyboard():
             {
                 "type": "callback",
                 "text": "🏠 Главное меню",
-                "payload": CALLBACK_MENU,
-                "intent": "default"
+                "payload": CALLBACK_MENU
             }
         ]
     ]
@@ -693,16 +657,14 @@ def get_ai_keyboard():
             {
                 "type": "callback",
                 "text": "🏆 Челлендж 14 дней",
-                "payload": CALLBACK_CHALLENGE_TASK,
-                "intent": "default"
+                "payload": CALLBACK_CHALLENGE_TASK
             }
         ],
         [
             {
                 "type": "callback",
                 "text": "🏠 Главное меню",
-                "payload": CALLBACK_MENU,
-                "intent": "default"
+                "payload": CALLBACK_MENU
             }
         ]
     ]
@@ -713,16 +675,14 @@ def get_implementation_keyboard():
             {
                 "type": "callback",
                 "text": "📞 Оставить заявку",
-                "payload": CALLBACK_IMPLEMENTATION,
-                "intent": "default"
+                "payload": CALLBACK_IMPLEMENTATION
             }
         ],
         [
             {
                 "type": "callback",
                 "text": "🏠 Главное меню",
-                "payload": CALLBACK_MENU,
-                "intent": "default"
+                "payload": CALLBACK_MENU
             }
         ]
     ]
@@ -752,12 +712,15 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
             }
         ]
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
+    logger.info(f"Sending message to {chat_id}, text length {len(text)}")
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
+            resp_text = await resp.text()
             if resp.status != 200:
-                error_text = await resp.text()
-                logger.error(f"send_message failed: {resp.status} - {error_text}")
-            return await resp.json()
+                logger.error(f"send_message failed: {resp.status} - {resp_text}")
+            else:
+                logger.info(f"Message sent successfully to {chat_id}")
+            return resp_text
 
 async def send_callback_answer(callback_id: str, text: str, keyboard: list = None):
     url = f"https://platform-api.max.ru/answers?callback_id={callback_id}"
@@ -772,12 +735,15 @@ async def send_callback_answer(callback_id: str, text: str, keyboard: list = Non
             }
         ]
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
+    logger.info(f"Sending callback answer to {callback_id}, text length {len(text)}")
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
+            resp_text = await resp.text()
             if resp.status != 200:
-                error_text = await resp.text()
-                logger.error(f"send_callback_answer failed: {resp.status} - {error_text}")
-            return await resp.json()
+                logger.error(f"send_callback_answer failed: {resp.status} - {resp_text}")
+            else:
+                logger.info(f"Callback answer sent successfully to {callback_id}")
+            return resp_text
 
 async def send_notification_to_channel(text: str):
     if not ADMIN_CHANNEL_ID or ADMIN_CHANNEL_ID == "None":
@@ -807,6 +773,12 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         return
 
     if callback_data == CALLBACK_AUDIT:
+        # Проверяем, не в процессе ли уже анкеты
+        if state == STATE_SURVEY or state == STATE_AWAITING_BUSINESS_NAME or state == STATE_AWAITING_BUSINESS_DESCRIPTION:
+            await send_callback_answer(callback_id,
+                "📋 Анкета уже запущена. Пожалуйста, ответь на текущий вопрос.",
+                None)
+            return
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {})
         await send_callback_answer(callback_id,
             "🚀 Отлично! Давай разберём твой бизнес.\n\n"
@@ -821,7 +793,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 "💬 Ты ещё не прошёл анкету.\n\n"
                 "Сначала заполни анкету, и я подготовлю твой персональный маркетинговый план.\n\n"
                 "👇 Начни сейчас",
-                [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT, "intent": "default"}]])
+                [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT}]])
             return
         
         save_user_state(chat_id, STATE_AI_CHAT, {})
@@ -837,13 +809,12 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         if not report or report["status"] != "ready":
             await send_callback_answer(callback_id,
                 "🏆 Челлендж доступен после заполнения анкеты.\n\n"
-                "Сначала заполни анкету, получи маркетинговый план, а потом начнём 14-дневный марафон к первым клиентам!\n\n"
+                "Сначала заполни анкету, получи маркетинговый план.\n\n"
                 "👇 Заполни анкету",
-                [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT, "intent": "default"}]])
+                [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT}]])
             return
         
         report_text = report["text"]
-        
         challenge = get_active_challenge(chat_id)
         if not challenge:
             challenge_id = start_new_challenge(chat_id)
@@ -865,7 +836,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 await send_callback_answer(callback_id,
                     f"🏆 Твой прогресс: день {challenge['current_day']} из 14, выполнено {challenge['tasks_completed']} заданий.\n\n"
                     f"🎯 Осталось дней: {remaining}\n\n"
-                    f"👇 Продолжай выполнять задания — каждый шаг приближает тебя к первым клиентам!",
+                    f"👇 Продолжай выполнять задания!",
                     get_challenge_with_help_keyboard())
         return
 
@@ -874,7 +845,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         if not report or report["status"] != "ready":
             await send_callback_answer(callback_id,
                 "🏆 Челлендж доступен после заполнения анкеты.",
-                [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT, "intent": "default"}]])
+                [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT}]])
             return
         
         challenge = get_active_challenge(chat_id)
@@ -899,19 +870,16 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             await send_callback_answer(callback_id,
                 f"🎉 ПОЗДРАВЛЯЮ! Ты прошёл 14-дневный челлендж!\n\n"
                 f"✅ Выполнено заданий: {challenge['tasks_completed'] + 1} из 14\n\n"
-                f"🔥 Теперь у тебя есть всё, чтобы получать клиентов регулярно!\n\n"
                 f"👇 Продолжай задавать вопросы AI и внедряй план",
                 get_after_plan_keyboard())
         else:
             new_day = challenge["current_day"] + 1
             advance_challenge_day(challenge["id"], new_day)
-            
             task_text = await generate_challenge_task(chat_id, new_day, report_text)
             save_challenge_task(challenge["id"], new_day, task_text)
-            
             await send_callback_answer(callback_id,
                 f"✅ Отлично! Задание дня {challenge['current_day']} выполнено!\n\n"
-                f"🏆 Прогресс: {challenge['tasks_completed'] + 1} заданий сделано\n\n"
+                f"🏆 Прогресс: {challenge['tasks_completed'] + 1} заданий\n\n"
                 f"💪 ЗАДАНИЕ ДЕНЬ {new_day}\n\n{task_text}\n\n"
                 f"👇 Продолжай в том же духе!",
                 get_challenge_with_help_keyboard())
@@ -922,7 +890,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         if not report or report["status"] != "ready":
             await send_callback_answer(callback_id,
                 "🏆 Челлендж доступен после заполнения анкеты.",
-                [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT, "intent": "default"}]])
+                [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT}]])
             return
         
         challenge = get_active_challenge(chat_id)
@@ -933,11 +901,11 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             return
         
         await send_callback_answer(callback_id,
-            f"🏆 ТВОЙ ПРОГРЕСС В ЧЕЛЛЕНДЖЕ «ПЕРВЫЕ КЛИЕНТЫ ЗА 14 ДНЕЙ»\n\n"
+            f"🏆 ТВОЙ ПРОГРЕСС\n\n"
             f"📅 День {challenge['current_day']} из 14\n"
-            f"✅ Выполнено заданий: {challenge['tasks_completed']}\n"
-            f"🎯 Осталось дней: {14 - challenge['current_day']}\n\n"
-            f"Продолжай выполнять задания — каждый шаг приближает тебя к первым клиентам!",
+            f"✅ Выполнено: {challenge['tasks_completed']}\n"
+            f"🎯 Осталось: {14 - challenge['current_day']}\n\n"
+            f"Продолжай выполнять задания!",
             get_challenge_with_help_keyboard())
         return
 
@@ -945,9 +913,8 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         save_user_state(chat_id, STATE_AWAITING_IMPLEMENTATION, {})
         await send_callback_answer(callback_id,
             "🔥 ВНЕДРЕНИЕ ПОД КЛЮЧ\n\n"
-            "Расскажи подробнее о своём бизнесе и что нужно внедрить.\n\n"
-            "Я передам информацию продюсеру, и он свяжется с тобой.\n\n"
-            "👇 Напиши свой запрос одним сообщением",
+            "Расскажи о своём бизнесе и что нужно внедрить.\n\n"
+            "Я передам информацию продюсеру.",
             None)
         return
 
@@ -995,21 +962,18 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 
                 if report_text:
                     save_report(chat_id, "premium", report_text)
-                    
                     await send_message(chat_id, "✅ ТВОЙ МАРКЕТИНГОВЫЙ ПЛАН ГОТОВ!\n\n" + report_text, None)
-                    
                     await asyncio.sleep(2)
-                    
                     await send_message(chat_id,
                         "🎯 Ты получил свой план.\n\n"
-                        "Сейчас у тебя есть шанс внедрить новую стратегию:\n"
-                        "- Задавай любые вопросы по плану AI\n"
-                        "- Начни 14-дневный челлендж «Первые клиенты за 2 недели»\n\n"
+                        "Теперь ты можешь:\n"
+                        "- Задавать любые вопросы по плану AI\n"
+                        "- Начать 14-дневный челлендж «Первые клиенты»\n\n"
                         "👇 Что хочешь сделать?",
                         get_after_plan_keyboard())
                 else:
                     await send_message(chat_id,
-                        "❌ Что-то пошло не так. Попробуй позже.",
+                        "❌ Не удалось сгенерировать план. Попробуй позже.",
                         get_main_menu_keyboard())
         return
 
@@ -1017,7 +981,9 @@ async def process_message(user_id: str, text: str):
     state, data = get_user_state(str(user_id))
     log_event(str(user_id), f"message: {text[:50]}")
 
-    if state == STATE_MENU:
+    if text == "/start":
+        # Сброс состояния в меню
+        save_user_state(str(user_id), STATE_MENU, {})
         await send_message(str(user_id),
             "👋 Привет! Я Вероника, продюсер экспертов.\n\n"
             "Что я умею:\n"
@@ -1026,12 +992,11 @@ async def process_message(user_id: str, text: str):
             "✅ Челлендж «Первые клиенты за 14 дней»\n\n"
             "👇 Начни с анкеты",
             get_main_menu_keyboard())
-        save_user_state(str(user_id), STATE_MENU, {})
         return
 
     if state == STATE_AWAITING_BUSINESS_NAME:
         if len(text) > 100:
-            await send_message(str(user_id), "Слишком длинное название. Напиши покороче до 100 символов:")
+            await send_message(str(user_id), "Слишком длинное название. Напиши покороче (до 100 символов):")
             return
         save_user_state(str(user_id), STATE_AWAITING_BUSINESS_DESCRIPTION, {"business_name": text})
         await send_message(str(user_id), "Ок, записала! Теперь напиши краткое описание бизнеса — что ты делаешь, кому помогаешь:")
@@ -1039,7 +1004,7 @@ async def process_message(user_id: str, text: str):
 
     if state == STATE_AWAITING_BUSINESS_DESCRIPTION:
         if len(text) > 500:
-            await send_message(str(user_id), "Описание слишком длинное. Напиши покороче до 500 символов:")
+            await send_message(str(user_id), "Описание слишком длинное. Напиши покороче (до 500 символов):")
             return
         business_name = data.get("business_name")
         save_business_data(str(user_id), business_name, text)
@@ -1054,19 +1019,18 @@ async def process_message(user_id: str, text: str):
                 "💬 Ты ещё не получил план.\n\n"
                 "Сначала заполни анкету и получи маркетинговый план.\n\n"
                 "👇 Начни сейчас",
-                [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT, "intent": "default"}]])
+                [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT}]])
             save_user_state(str(user_id), STATE_MENU, {})
             return
         
         save_chat_message(str(user_id), "user", text)
-        
         report_text = report["text"]
         
         hard_keywords = ["настрой", "сделай", "запусти", "воронку", "таргет", "внедрение", "помоги сделать", "напиши скрипт"]
         is_hard = any(keyword in text.lower() for keyword in hard_keywords)
         
         if is_hard:
-            answer = "🔥 Это задача для профессионального внедрения.\n\nЕсли хочешь сделать это правильно и без ошибок — оставь заявку. Я свяжусь с тобой и помогу внедрить.\n\n👇 Нажми кнопку"
+            answer = "🔥 Это задача для профессионального внедрения.\n\nЕсли хочешь сделать это правильно — оставь заявку. Я свяжусь с тобой и помогу внедрить.\n\n👇 Нажми кнопку"
             await send_message(str(user_id), answer, get_implementation_keyboard())
         else:
             await send_message(str(user_id), "🤔 Думаю...", None)
@@ -1091,12 +1055,19 @@ async def process_message(user_id: str, text: str):
         save_user_state(str(user_id), STATE_MENU, {})
         return
 
+    # Если состояние не распознано, показываем меню
+    save_user_state(str(user_id), STATE_MENU, {})
+    await send_message(str(user_id),
+        "👋 Привет! Я Вероника.\n\n"
+        "👇 Нажми кнопку, чтобы начать",
+        get_main_menu_keyboard())
+
 # === СОЗДАНИЕ ПРИЛОЖЕНИЯ FASTAPI ===
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Salesplan bot started (marketing plan + challenge)")
+    logger.info("Salesplan bot started")
     yield
     logger.info("Salesplan bot stopped")
 
@@ -1104,7 +1075,7 @@ app = FastAPI(title="Salesplan Bot for MAX", lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot is running", "version": "9.0", "mode": "marketing_plan"}
+    return {"status": "Salesplan bot is running", "version": "9.1"}
 
 @app.get("/health")
 async def health():
