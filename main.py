@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan для MAX (исправленный)
+# File: main.py — бот Salesplan для MAX (исправленный: добавлена кнопка помощи во все меню)
 
 import asyncio
 import logging
@@ -23,7 +23,8 @@ MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID")
 REVIEWS_URL = os.getenv("REVIEWS_URL", "https://vk.ru/topic-164421538_39653658")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJ0C7zfm77-mllQpVwpwgBW8_5Z_5ddAEDVrKPZzJ4-fDRQKfE")
+# Ссылка на диалог с продюсером (личные сообщения)
+HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJp3NEa7OYZr1MKfUuC1hYDyKh2f4HFkfTXT88W3txWaBaFQmU")
 
 if not MAX_BOT_TOKEN:
     raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in .env")
@@ -260,6 +261,15 @@ def save_report(user_id: str, report_type: str, report_text: str):
         INSERT OR REPLACE INTO reports (user_id, report_type, report_text, status, ready_at)
         VALUES (?, ?, ?, 'ready', CURRENT_TIMESTAMP)
     """, (user_id, report_type, report_text))
+    conn.commit()
+    conn.close()
+
+def update_report_status(user_id: str, status: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        UPDATE reports SET status = ?, ready_at = CASE WHEN ? = 'ready' THEN CURRENT_TIMESTAMP ELSE ready_at END
+        WHERE user_id = ? AND report_type = 'premium' AND status != 'ready'
+    """, (status, status, user_id))
     conn.commit()
     conn.close()
 
@@ -546,159 +556,7 @@ async def generate_challenge_task(user_id: str, day: int, report_text: str) -> s
         logger.error(f"Generate task error: {e}")
         return f"ЗАДАНИЕ ДЕНЬ {day}\n\nПрочитай свой маркетинговый план и найди 1 пункт для привлечения клиентов.\n\nЧЕК-ЛИСТ:\n- Открой план\n- Выбери один пункт\n- Сделай его\n\nПОЧЕМУ ЭТО ВАЖНО: Действие сегодня = клиент завтра."
 
-# === КЛАВИАТУРЫ ===
-def get_main_menu_keyboard():
-    return [
-        [
-            {
-                "type": "callback",
-                "text": "📊 Пройти анкету",
-                "payload": CALLBACK_AUDIT
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "💬 Задать вопрос AI",
-                "payload": CALLBACK_ASK_AI
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "🏆 Челлендж 14 дней",
-                "payload": CALLBACK_CHALLENGE_TASK
-            }
-        ]
-    ]
-
-def get_after_plan_keyboard():
-    return [
-        [
-            {
-                "type": "callback",
-                "text": "💬 Задать вопрос AI",
-                "payload": CALLBACK_ASK_AI
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "🏆 Начать челлендж 14 дней",
-                "payload": CALLBACK_CHALLENGE_TASK
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "🔄 Пройти анкету заново",
-                "payload": CALLBACK_AUDIT
-            }
-        ]
-    ]
-
-def get_survey_keyboard(question_index: int):
-    if question_index >= len(SURVEY_QUESTIONS):
-        return None
-    q = SURVEY_QUESTIONS[question_index]
-    keyboard = []
-    for payload, label in q["options"]:
-        keyboard.append([
-            {
-                "type": "callback",
-                "text": label,
-                "payload": payload
-            }
-        ])
-    return keyboard
-
-def get_challenge_with_help_keyboard():
-    return [
-        [
-            {
-                "type": "callback",
-                "text": "📋 Получить задание",
-                "payload": CALLBACK_CHALLENGE_TASK
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "✅ Выполнил задание",
-                "payload": CALLBACK_CHALLENGE_DONE
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "📊 Мой прогресс",
-                "payload": CALLBACK_CHALLENGE_PROGRESS
-            }
-        ],
-        [
-            {
-                "type": "link",
-                "text": "🎓 Помощь продюсера",
-                "url": HELP_URL
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "🏠 Главное меню",
-                "payload": CALLBACK_MENU
-            }
-        ]
-    ]
-
-def get_ai_keyboard():
-    return [
-        [
-            {
-                "type": "callback",
-                "text": "🏆 Челлендж 14 дней",
-                "payload": CALLBACK_CHALLENGE_TASK
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "🏠 Главное меню",
-                "payload": CALLBACK_MENU
-            }
-        ]
-    ]
-
-def get_implementation_keyboard():
-    return [
-        [
-            {
-                "type": "callback",
-                "text": "📞 Оставить заявку",
-                "payload": CALLBACK_IMPLEMENTATION
-            }
-        ],
-        [
-            {
-                "type": "callback",
-                "text": "🏠 Главное меню",
-                "payload": CALLBACK_MENU
-            }
-        ]
-    ]
-
-async def send_animation(user_id: str):
-    steps = [
-        "🔍 Анализируем бизнес...\n\n⏳ 1/4",
-        "📊 Изучаем целевую аудиторию...\n\n⏳ 2/4",
-        "🎯 Ищем точки роста...\n\n⏳ 3/4",
-        "📝 Формируем план...\n\n⏳ 4/4"
-    ]
-    for step in steps:
-        await send_message(user_id, step, None)
-        await asyncio.sleep(3)
-
-# === ОТПРАВКА СООБЩЕНИЙ ===
+# === ОТПРАВКА СООБЩЕНИЙ С РАЗБИВКОЙ ===
 async def send_message(chat_id: str, text: str, keyboard: list = None):
     url = f"https://platform-api.max.ru/messages?user_id={chat_id}"
     payload = {"text": text}
@@ -721,6 +579,23 @@ async def send_message(chat_id: str, text: str, keyboard: list = None):
             else:
                 logger.info(f"Message sent successfully to {chat_id}")
             return resp_text
+
+async def send_long_message(chat_id: str, text: str, keyboard: list = None):
+    """Отправляет длинное сообщение, разбивая на части до 3900 символов."""
+    max_len = 3900
+    if len(text) <= max_len:
+        await send_message(chat_id, text, keyboard)
+        return
+    
+    first_part = text[:max_len]
+    await send_message(chat_id, first_part, None)
+    remaining = text[max_len:]
+    while remaining:
+        part = remaining[:max_len]
+        await send_message(chat_id, part, None)
+        remaining = remaining[max_len:]
+    if keyboard:
+        await send_message(chat_id, "⬆️ Продолжение плана выше. Что дальше?", keyboard)
 
 async def send_callback_answer(callback_id: str, text: str, keyboard: list = None):
     url = f"https://platform-api.max.ru/answers?callback_id={callback_id}"
@@ -760,6 +635,194 @@ async def send_notification_to_channel(text: str):
                 logger.error(f"send_notification_to_channel failed: {resp.status} - {error_text}")
             return await resp.json()
 
+# === КЛАВИАТУРЫ (С КНОПКОЙ ПОМОЩИ ВО ВСЕХ МЕНЮ) ===
+def get_main_menu_keyboard():
+    return [
+        [
+            {
+                "type": "callback",
+                "text": "📊 Пройти анкету",
+                "payload": CALLBACK_AUDIT
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "💬 Задать вопрос AI",
+                "payload": CALLBACK_ASK_AI
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "🏆 Челлендж 14 дней",
+                "payload": CALLBACK_CHALLENGE_TASK
+            }
+        ],
+        [
+            {
+                "type": "link",
+                "text": "🆘 Помощь / Связаться",
+                "url": HELP_URL
+            }
+        ]
+    ]
+
+def get_after_plan_keyboard():
+    return [
+        [
+            {
+                "type": "callback",
+                "text": "💬 Задать вопрос AI",
+                "payload": CALLBACK_ASK_AI
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "🏆 Начать челлендж 14 дней",
+                "payload": CALLBACK_CHALLENGE_TASK
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "🔄 Пройти анкету заново",
+                "payload": CALLBACK_AUDIT
+            }
+        ],
+        [
+            {
+                "type": "link",
+                "text": "🆘 Помощь / Связаться",
+                "url": HELP_URL
+            }
+        ]
+    ]
+
+def get_survey_keyboard(question_index: int):
+    if question_index >= len(SURVEY_QUESTIONS):
+        return None
+    q = SURVEY_QUESTIONS[question_index]
+    keyboard = []
+    for payload, label in q["options"]:
+        keyboard.append([
+            {
+                "type": "callback",
+                "text": label,
+                "payload": payload
+            }
+        ])
+    # Добавляем кнопку помощи и в опросник
+    keyboard.append([
+        {
+            "type": "link",
+            "text": "🆘 Помощь / Связаться",
+            "url": HELP_URL
+        }
+    ])
+    return keyboard
+
+def get_challenge_with_help_keyboard():
+    return [
+        [
+            {
+                "type": "callback",
+                "text": "📋 Получить задание",
+                "payload": CALLBACK_CHALLENGE_TASK
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "✅ Выполнил задание",
+                "payload": CALLBACK_CHALLENGE_DONE
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "📊 Мой прогресс",
+                "payload": CALLBACK_CHALLENGE_PROGRESS
+            }
+        ],
+        [
+            {
+                "type": "link",
+                "text": "🆘 Помощь / Связаться",
+                "url": HELP_URL
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "🏠 Главное меню",
+                "payload": CALLBACK_MENU
+            }
+        ]
+    ]
+
+def get_ai_keyboard():
+    return [
+        [
+            {
+                "type": "callback",
+                "text": "🏆 Челлендж 14 дней",
+                "payload": CALLBACK_CHALLENGE_TASK
+            }
+        ],
+        [
+            {
+                "type": "link",
+                "text": "🆘 Помощь / Связаться",
+                "url": HELP_URL
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "🏠 Главное меню",
+                "payload": CALLBACK_MENU
+            }
+        ]
+    ]
+
+def get_implementation_keyboard():
+    return [
+        [
+            {
+                "type": "callback",
+                "text": "📞 Оставить заявку",
+                "payload": CALLBACK_IMPLEMENTATION
+            }
+        ],
+        [
+            {
+                "type": "link",
+                "text": "🆘 Помощь / Связаться",
+                "url": HELP_URL
+            }
+        ],
+        [
+            {
+                "type": "callback",
+                "text": "🏠 Главное меню",
+                "payload": CALLBACK_MENU
+            }
+        ]
+    ]
+
+async def send_animation(user_id: str):
+    steps = [
+        "🔍 Анализируем бизнес...\n\n⏳ 1/4",
+        "📊 Изучаем целевую аудиторию...\n\n⏳ 2/4",
+        "🎯 Ищем точки роста...\n\n⏳ 3/4",
+        "📝 Формируем план...\n\n⏳ 4/4"
+    ]
+    for step in steps:
+        await send_message(user_id, step, None)
+        await asyncio.sleep(3)
+
 # === ОБРАБОТЧИКИ ===
 async def process_callback(chat_id: str, callback_id: str, callback_data: str):
     state, data = get_user_state(chat_id)
@@ -773,7 +836,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         return
 
     if callback_data == CALLBACK_AUDIT:
-        # Проверяем, не в процессе ли уже анкеты
         if state == STATE_SURVEY or state == STATE_AWAITING_BUSINESS_NAME or state == STATE_AWAITING_BUSINESS_DESCRIPTION:
             await send_callback_answer(callback_id,
                 "📋 Анкета уже запущена. Пожалуйста, ответь на текущий вопрос.",
@@ -954,27 +1016,41 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                         get_main_menu_keyboard())
                     return
 
-                await send_callback_answer(callback_id, "🔍 Запускаю анализ...", None)
-                await send_animation(chat_id)
-                
-                report_text = await call_deepseek_marketing_plan(
-                    biz_data["name"], biz_data["description"], user_data["answers"])
-                
-                if report_text:
-                    save_report(chat_id, "premium", report_text)
-                    await send_message(chat_id, "✅ ТВОЙ МАРКЕТИНГОВЫЙ ПЛАН ГОТОВ!\n\n" + report_text, None)
-                    await asyncio.sleep(2)
-                    await send_message(chat_id,
-                        "🎯 Ты получил свой план.\n\n"
-                        "Теперь ты можешь:\n"
-                        "- Задавать любые вопросы по плану AI\n"
-                        "- Начать 14-дневный челлендж «Первые клиенты»\n\n"
-                        "👇 Что хочешь сделать?",
-                        get_after_plan_keyboard())
+                existing = get_report(chat_id, "premium")
+                if existing and existing["status"] == "ready":
+                    report_text = existing["text"]
+                    await send_callback_answer(callback_id,
+                        "📋 План уже был сгенерирован ранее. Отправляю его...", None)
+                elif existing and existing["status"] == "generating":
+                    await send_callback_answer(callback_id,
+                        "⏳ План уже генерируется. Подождите немного...", None)
+                    return
                 else:
-                    await send_message(chat_id,
-                        "❌ Не удалось сгенерировать план. Попробуй позже.",
-                        get_main_menu_keyboard())
+                    save_report(chat_id, "premium", "")
+                    await send_callback_answer(callback_id, "🔍 Запускаю анализ...", None)
+                    await send_animation(chat_id)
+                    
+                    report_text = await call_deepseek_marketing_plan(
+                        biz_data["name"], biz_data["description"], user_data["answers"])
+                    
+                    if not report_text:
+                        await send_message(chat_id,
+                            "❌ Не удалось сгенерировать план. Попробуй позже.",
+                            get_main_menu_keyboard())
+                        update_report_status(chat_id, "failed")
+                        return
+                    
+                    save_report(chat_id, "premium", report_text)
+
+                await send_long_message(chat_id, "✅ ТВОЙ МАРКЕТИНГОВЫЙ ПЛАН ГОТОВ!\n\n" + report_text, None)
+                await asyncio.sleep(2)
+                await send_message(chat_id,
+                    "🎯 Ты получил свой план.\n\n"
+                    "Теперь ты можешь:\n"
+                    "- Задавать любые вопросы по плану AI\n"
+                    "- Начать 14-дневный челлендж «Первые клиенты»\n\n"
+                    "👇 Что хочешь сделать?",
+                    get_after_plan_keyboard())
         return
 
 async def process_message(user_id: str, text: str):
@@ -982,7 +1058,6 @@ async def process_message(user_id: str, text: str):
     log_event(str(user_id), f"message: {text[:50]}")
 
     if text == "/start":
-        # Сброс состояния в меню
         save_user_state(str(user_id), STATE_MENU, {})
         await send_message(str(user_id),
             "👋 Привет! Я Вероника, продюсер экспертов.\n\n"
@@ -1055,7 +1130,6 @@ async def process_message(user_id: str, text: str):
         save_user_state(str(user_id), STATE_MENU, {})
         return
 
-    # Если состояние не распознано, показываем меню
     save_user_state(str(user_id), STATE_MENU, {})
     await send_message(str(user_id),
         "👋 Привет! Я Вероника.\n\n"
@@ -1075,7 +1149,7 @@ app = FastAPI(title="Salesplan Bot for MAX", lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot is running", "version": "9.1"}
+    return {"status": "Salesplan bot is running", "version": "9.3"}
 
 @app.get("/health")
 async def health():
