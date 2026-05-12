@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan (версия 10.5: исправлена кнопка "Начать" в MAX)
+# File: main.py — бот Salesplan (версия 10.6: прогревающие тексты, новый порядок консультации)
 
 import asyncio
 import logging
@@ -23,7 +23,7 @@ load_dotenv()
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJp3NEa7OYZr1MKfUuC1hYDyKh2f4HFkfTXT88W3txWaBaFQmU")
-PRODUCER_USER_ID = os.getenv("PRODUCER_USER_ID", "24585087")   # сюда уведомления
+PRODUCER_USER_ID = os.getenv("PRODUCER_USER_ID", "24585087")
 
 if not MAX_BOT_TOKEN:
     raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in .env")
@@ -51,9 +51,10 @@ STATE_SURVEY = "survey"
 STATE_AI_CHAT = "ai_chat"
 STATE_AWAITING_IMPLEMENTATION = "awaiting_implementation"
 STATE_AWAITING_FEEDBACK_REASON = "awaiting_feedback_reason"
-STATE_AWAITING_CONSULT_PHONE = "awaiting_consult_phone"
+# Новый порядок консультации: сначала время, потом телефон, потом запрос
 STATE_AWAITING_CONSULT_TIME = "awaiting_consult_time"
-STATE_AWAITING_CONSULT_COMMENT = "awaiting_consult_comment"
+STATE_AWAITING_CONSULT_PHONE = "awaiting_consult_phone"
+STATE_AWAITING_CONSULT_REQUEST = "awaiting_consult_request"
 
 # === CALLBACK DATA ===
 CALLBACK_AUDIT = "audit"
@@ -69,7 +70,7 @@ CALLBACK_FEEDBACK_NO = "feedback_no"
 CALLBACK_START_SURVEY = "start_survey"
 CALLBACK_BOOK_CONSULT = "book_consult"
 
-# === ОПРОСНИК ===
+# === ОПРОСНИК (без изменений) ===
 Q1_SERVICE = "q1_service"
 Q1_INFO = "q1_info"
 Q1_CONSULT = "q1_consult"
@@ -111,7 +112,7 @@ def init_bot_db():
     conn.execute("CREATE TABLE IF NOT EXISTS chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, role TEXT NOT NULL, message TEXT NOT NULL, created_at TIMESTAMP)")
     conn.execute("CREATE TABLE IF NOT EXISTS deepseek_queries (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, query_type TEXT NOT NULL, prompt TEXT, created_at TIMESTAMP)")
     conn.execute("CREATE TABLE IF NOT EXISTS feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, rating INTEGER, reason TEXT, created_at TIMESTAMP)")
-    conn.execute("CREATE TABLE IF NOT EXISTS consultations (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, phone TEXT, preferred_time TEXT, comment TEXT, status TEXT DEFAULT 'new', created_at TIMESTAMP)")
+    conn.execute("CREATE TABLE IF NOT EXISTS consultations (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, preferred_time TEXT, phone TEXT, request TEXT, status TEXT DEFAULT 'new', created_at TIMESTAMP)")
     conn.commit()
     conn.close()
 
@@ -208,9 +209,10 @@ def save_feedback(user_id: str, rating: int, reason: str = None):
     conn.commit()
     conn.close()
 
-def save_consultation_request(user_id: str, phone: str, preferred_time: str, comment: str = None):
+def save_consultation_request(user_id: str, preferred_time: str, phone: str, request_text: str):
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("INSERT INTO consultations (user_id, phone, preferred_time, comment) VALUES (?, ?, ?, ?)", (user_id, phone, preferred_time, comment))
+    conn.execute("INSERT INTO consultations (user_id, preferred_time, phone, request) VALUES (?, ?, ?, ?)",
+                 (user_id, preferred_time, phone, request_text))
     conn.commit()
     conn.close()
 
@@ -313,12 +315,12 @@ async def notify_producer(text: str):
         await send_message(PRODUCER_USER_ID, text, None)
 
 async def send_animation(user_id: str):
-    steps = ["🔍 Анализируем бизнес...\n\n⏳ 1/4", "📊 Изучаем ЦА...\n\n⏳ 2/4", "🎯 Ищем точки роста...\n\n⏳ 3/4", "📝 Формируем план...\n\n⏳ 4/4"]
+    steps = ["🔍 Готовим ваш маркетинговый план...\n\n⏳ 1/4", "📊 Раскладываем точки роста...\n\n⏳ 2/4", "🎯 Настраиваем прицел на первые деньги...\n\n⏳ 3/4", "📝 Формируем дорожную карту...\n\n⏳ 4/4"]
     for step in steps:
         await send_message(user_id, step, None)
         await asyncio.sleep(2)
 
-# === DEEPSEEK API (улучшенные промпты) ===
+# === DEEPSEEK API (улучшенные промпты без изменений) ===
 async def call_deepseek_marketing_plan(name: str, description: str, answers: dict, user_id: str = None) -> str:
     if not DEEPSEEK_API_KEY:
         return None
@@ -404,31 +406,31 @@ async def generate_challenge_task(user_id: str, day: int, report_text: str) -> s
 
 def fallback_task(day: int) -> str:
     return f"""ЗАДАНИЕ ДЕНЬ {day}
-Напиши пост в VK о проблеме клиента и предложи решение.
+Создай пост в VK о проблеме клиента и предложи решение.
 
 КАК СДЕЛАТЬ:
-1. Открой VK, создай пост на 300-500 символов.
+1. Открой VK, напиши пост на 300-500 символов.
 2. В конце добавь: «Напиши "разбор" в комментариях — сделаю бесплатный разбор».
 3. Опубликуй и ответь трём первым комментаторам.
 
 ПОЧЕМУ ЭТО ВАЖНО:
-Это даст заявки и обратную связь."""
+Ты увидишь реальный спрос и начнёшь получать заявки."""
 
-# === КЛАВИАТУРЫ ===
+# === КЛАВИАТУРЫ (с улучшенными текстами) ===
 def get_main_menu_keyboard():
     return [
-        [{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT}],
-        [{"type": "callback", "text": "💬 Задать вопрос AI", "payload": CALLBACK_ASK_AI}],
-        [{"type": "callback", "text": "🏆 Челлендж 14 дней", "payload": CALLBACK_CHALLENGE_TASK}],
-        [{"type": "callback", "text": "🎯 Записаться к продюсеру", "payload": CALLBACK_BOOK_CONSULT}],
+        [{"type": "callback", "text": "📊 Получить маркетинговый план", "payload": CALLBACK_AUDIT}],
+        [{"type": "callback", "text": "💬 Задать вопрос AI (круглосуточно)", "payload": CALLBACK_ASK_AI}],
+        [{"type": "callback", "text": "🏆 Челлендж «Первые деньги за 14 дней»", "payload": CALLBACK_CHALLENGE_TASK}],
+        [{"type": "callback", "text": "🎯 Записаться на консультацию к продюсеру", "payload": CALLBACK_BOOK_CONSULT}],
         [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}]
     ]
 
 def get_after_plan_keyboard():
     return [
-        [{"type": "callback", "text": "💬 Задать вопрос AI", "payload": CALLBACK_ASK_AI}],
-        [{"type": "callback", "text": "🏆 Начать челлендж", "payload": CALLBACK_CHALLENGE_TASK}],
-        [{"type": "callback", "text": "🎯 Записаться", "payload": CALLBACK_BOOK_CONSULT}],
+        [{"type": "callback", "text": "💬 Задать вопрос по плану", "payload": CALLBACK_ASK_AI}],
+        [{"type": "callback", "text": "🏆 Старт челленджа", "payload": CALLBACK_CHALLENGE_TASK}],
+        [{"type": "callback", "text": "🎯 Консультация продюсера", "payload": CALLBACK_BOOK_CONSULT}],
         [{"type": "callback", "text": "🔄 Пройти анкету заново", "payload": CALLBACK_AUDIT}],
         [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}]
     ]
@@ -443,10 +445,10 @@ def get_survey_keyboard(step: int):
 
 def get_challenge_keyboard():
     return [
-        [{"type": "callback", "text": "📋 Задание", "payload": CALLBACK_CHALLENGE_TASK}],
-        [{"type": "callback", "text": "✅ Выполнил", "payload": CALLBACK_CHALLENGE_DONE}],
-        [{"type": "callback", "text": "📊 Прогресс", "payload": CALLBACK_CHALLENGE_PROGRESS}],
-        [{"type": "callback", "text": "🎯 Записаться", "payload": CALLBACK_BOOK_CONSULT}],
+        [{"type": "callback", "text": "📋 Задание на сегодня", "payload": CALLBACK_CHALLENGE_TASK}],
+        [{"type": "callback", "text": "✅ Выполнил задание", "payload": CALLBACK_CHALLENGE_DONE}],
+        [{"type": "callback", "text": "📊 Мой прогресс", "payload": CALLBACK_CHALLENGE_PROGRESS}],
+        [{"type": "callback", "text": "🎯 Записаться к продюсеру", "payload": CALLBACK_BOOK_CONSULT}],
         [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}],
         [{"type": "callback", "text": "🏠 Главное меню", "payload": CALLBACK_MENU}]
     ]
@@ -454,7 +456,7 @@ def get_challenge_keyboard():
 def get_ai_keyboard():
     return [
         [{"type": "callback", "text": "🏆 Челлендж", "payload": CALLBACK_CHALLENGE_TASK}],
-        [{"type": "callback", "text": "🎯 Записаться", "payload": CALLBACK_BOOK_CONSULT}],
+        [{"type": "callback", "text": "🎯 Консультация", "payload": CALLBACK_BOOK_CONSULT}],
         [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}],
         [{"type": "callback", "text": "🏠 Меню", "payload": CALLBACK_MENU}]
     ]
@@ -474,22 +476,98 @@ def get_feedback_keyboard():
 
 def get_start_keyboard():
     return [
-        [{"type": "callback", "text": "✅ Да, хочу план за 2 минуты", "payload": CALLBACK_START_SURVEY}],
+        [{"type": "callback", "text": "✅ Да, хочу маркетинговый план за 2 минуты", "payload": CALLBACK_START_SURVEY}],
         [{"type": "callback", "text": "🎯 Записаться к продюсеру", "payload": CALLBACK_BOOK_CONSULT}],
         [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}]
     ]
 
-def get_consult_keyboard_phone():
+# Клавиатуры для консультации (новый порядок)
+def get_consult_time_keyboard():
     return [[{"type": "callback", "text": "Отмена", "payload": CALLBACK_MENU}]]
 
-def get_consult_keyboard_time():
+def get_consult_phone_keyboard():
     return [[{"type": "callback", "text": "Отмена", "payload": CALLBACK_MENU}]]
 
-def get_consult_keyboard_comment():
-    return [
-        [{"type": "callback", "text": "Пропустить", "payload": "skip_comment"}],
-        [{"type": "callback", "text": "Отмена", "payload": CALLBACK_MENU}]
-    ]
+def get_consult_request_keyboard():
+    return [[{"type": "callback", "text": "Отмена", "payload": CALLBACK_MENU}]]
+
+# === ПРОГРЕВАЮЩИЕ ТЕКСТЫ В СТИЛЕ ХАКАМАДА ===
+WELCOME_TEXT = """🔥 Привет, предприниматель! Я Вероника Макаревич — продюсер, который знает, как превратить хаос в прибыль.
+
+Многие эксперты тонут в бесконечных задачах: контент, воронка, реклама, клиенты… А денег нет. 
+Знакомо? Тогда ты по адресу.
+
+⚡️ Что я тебе даю:
+
+📊 Маркетинговый план — не теория, а конкретная дорожная карта «бери и делай». За 10 вопросов AI разложит твой бизнес по полочкам и покажет, где ты теряешь деньги.
+
+💬 AI-чат 24/7 — задавай любые вопросы по плану. Без вот этих «подожди, я отвечу завтра».
+
+🏆 Челлендж 14 дней — получай одно чёткое задание в день, шаг за шагом иди к первым деньгам. Без перегрузов.
+
+🎯 Консультация со мной — разберём твой случай, найду узкое место и скажу, как его пробить.
+
+Зачем тебе маркетинговый план? 
+Большинство экспертов продают впустую: постят, снимают рилс, но клиент не идёт. Потому что нет системы. План — это компас. Он показывает, где прячутся твои деньги. Ты просто следуешь маршруту.
+
+Как работаем:
+1) Проходишь короткую анкету (2 минуты)
+2) AI генерирует твой персональный план
+3) Начинаешь внедрять с моим AI-помощником
+4) Через 14 дней — первые результаты
+
+Поехали? 👇"""
+
+def get_plan_value_text():
+    return """🎯 Зачем тебе маркетинговый план?
+
+Представь: ты знаешь каждый шаг, который приведёт к деньгам. Не гадаешь, куда бить, а точно понимаешь — сейчас делаем пост в VK, завтра запускаем Яндекс.Директ, через неделю подписываем первого платного клиента.
+
+Мой AI-помощник проанализирует твой бизнес и выдаст:
+- Твою реальную ситуацию (без розовых соплей)
+- Конкурентов и их фишки
+- Кто твой клиент и что ему нужно
+- Сильные и слабые стороны
+- Пошаговую воронку продаж
+- Конкретный план на месяц
+
+Всё — без воды, только работающие инструменты VK, MAX и Яндекс.Директ. Telegram и Instagram не предлагаю, они в РФ нерабочие.
+
+Просто ответь на 5 вопросов, и план у тебя в кармане."""
+
+def get_ai_value_text():
+    return """💬 AI-чат 24/7
+
+Это твой личный консультант, который всегда на связи. 
+Забыл, как сделать пост в VK? Спроси. Не знаешь, что ответить клиенту? Напиши. Сомневаешься в следующем шаге? AI подскажет.
+
+Ограничения: без Instagram/Telegram. Только VK, MAX, Яндекс.Директ. Если нужна настройка рекламы или внедрение воронки — я приглашу продюсера на платную консультацию. Но базовые вопросы по плану — бесплатно и безлимитно."""
+
+def get_challenge_value_text():
+    return """🏆 Челлендж «Первые деньги за 14 дней»
+
+Каждый день ты получаешь ОДНО конкретное задание на 1-2 часа. Без списков и чек-листов. Без перегруза.
+
+Пример задания:
+«Опубликуй в VK пост-кейс о том, как ты помог клиенту решить проблему. В конце добавь призыв написать в личку "Хочу также". Опубликуй в двух профильных группах.»
+
+Ты просто делаешь шаг за шагом. К концу второй недели у тебя есть минимум 3–5 лидов, а то и первые оплаты.
+
+Проверено на 50+ нишах: эксперты, психологи, коучи, инфобизнес — все получают результат."""
+
+def get_consultation_value_text():
+    return """🎯 Консультация с продюсером (бесплатно для первых 100 подписчиков)
+
+30 минут прямого эфира со мной. Никакой воды, только разбор твоего бизнеса и чёткий план действий.
+
+Что ты вынесешь:
+- Где именно ты теряешь деньги сейчас
+- Какую первую продажу можно сделать завтра
+- Честный разбор ошибок в воронке
+
+Без подписок и обязательств. Просто созвон и польза.
+
+Заполни форму, и я свяжусь с тобой."""
 
 # === ОБРАБОТЧИКИ ===
 async def process_message(user_id: str, text: str):
@@ -508,82 +586,96 @@ async def process_message(user_id: str, text: str):
 
     if text == "/start":
         save_user_state(user_id, STATE_MENU, {})
-        await send_message(user_id, "👋 Привет! Хотите маркетинговый план или записаться на консультацию?", get_start_keyboard())
+        await send_message(user_id, WELCOME_TEXT, get_start_keyboard())
+        return
+
+    # Консультация: новый порядок: сначала время
+    if state == STATE_AWAITING_CONSULT_TIME:
+        if len(text) < 3:
+            await send_message(user_id, "Укажите удобное время для звонка (например, завтра в 15:00):", get_consult_time_keyboard())
+            return
+        save_user_state(user_id, STATE_AWAITING_CONSULT_PHONE, {"preferred_time": text})
+        await send_message(user_id, "Спасибо. Теперь укажите ваш номер телефона:", get_consult_phone_keyboard())
         return
 
     if state == STATE_AWAITING_CONSULT_PHONE:
-        if len(text) < 5:
-            await send_message(user_id, "Введите телефон (например +7...):")
+        if len(text) < 5 or not re.search(r'[\d\+]', text):
+            await send_message(user_id, "Введите корректный номер телефона (например, +7 123 456-78-90):")
             return
-        save_user_state(user_id, STATE_AWAITING_CONSULT_TIME, {"phone": text})
-        await send_message(user_id, "Укажите удобное время для звонка:", get_consult_keyboard_time())
+        new_data = data.copy()
+        new_data["phone"] = text
+        save_user_state(user_id, STATE_AWAITING_CONSULT_REQUEST, new_data)
+        await send_message(user_id, "Опишите ваш запрос на консультацию (что хотите разобрать, какие боли):", get_consult_request_keyboard())
         return
 
-    if state == STATE_AWAITING_CONSULT_TIME:
-        nd = data.copy()
-        nd["time"] = text
-        save_user_state(user_id, STATE_AWAITING_CONSULT_COMMENT, nd)
-        await send_message(user_id, "Комментарий (или Пропустить):", get_consult_keyboard_comment())
-        return
-
-    if state == STATE_AWAITING_CONSULT_COMMENT:
-        comment = text if text != "skip_comment" else None
+    if state == STATE_AWAITING_CONSULT_REQUEST:
+        preferred_time = data.get("preferred_time")
         phone = data.get("phone")
-        pref_time = data.get("time")
-        save_consultation_request(user_id, phone, pref_time, comment)
+        request_text = text
+        save_consultation_request(user_id, preferred_time, phone, request_text)
         await notify_producer(
-            f"📞 НОВАЯ ЗАЯВКА НА КОНСУЛЬТАЦИЮ\nПользователь: {user_id}\nТелефон: {phone}\nВремя: {pref_time}\nКоммент: {comment or '-'}\n{format_moscow_time()}"
+            f"📞 НОВАЯ ЗАЯВКА НА КОНСУЛЬТАЦИЮ\n\n"
+            f"Пользователь: {user_id}\n"
+            f"Время: {preferred_time}\n"
+            f"Телефон: {phone}\n"
+            f"Запрос: {request_text}\n"
+            f"⏰ {format_moscow_time()}"
         )
-        await send_message(user_id, "✅ Заявка принята! Продюсер свяжется.", get_main_menu_keyboard())
+        await send_message(user_id,
+            "✅ Ваша заявка принята! Продюсер свяжется с вами в ближайшее время для согласования времени.\n\n"
+            "А пока можете изучить маркетинговый план или задать вопрос AI.",
+            get_main_menu_keyboard())
         save_user_state(user_id, STATE_MENU, {})
         return
 
+    # Остальные состояния (анкета, AI-чат, имплементация, фидбек) без изменений, кроме текстов сообщений
     if state == STATE_AWAITING_BUSINESS_NAME:
         if len(text) > 100:
-            await send_message(user_id, "Слишком длинное название, сократите:")
+            await send_message(user_id, "Название слишком длинное, сократите (до 100 символов):")
             return
         save_user_state(user_id, STATE_AWAITING_BUSINESS_DESCRIPTION, {"business_name": text})
-        await send_message(user_id, "Опишите бизнес кратко (что делаете, кому помогаете):")
+        await send_message(user_id, "Отлично! Теперь опишите бизнес: что вы делаете, кому помогаете, какая ваша уникальность? (макс 500 символов)")
         return
 
     if state == STATE_AWAITING_BUSINESS_DESCRIPTION:
         if len(text) > 500:
-            await send_message(user_id, "Слишком длинное описание (макс 500):")
+            await send_message(user_id, "Сократите описание до 500 символов:")
             return
         name = data.get("business_name")
         save_business_data(user_id, name, text)
         save_user_state(user_id, STATE_SURVEY, {"answers": {}, "survey_step": 0})
-        await send_message(user_id, SURVEY_QUESTIONS[0]["text"], get_survey_keyboard(0))
+        # Прогревающий текст перед анкетой
+        await send_message(user_id, get_plan_value_text() + "\n\n" + SURVEY_QUESTIONS[0]["text"], get_survey_keyboard(0))
         return
 
     if state == STATE_AI_CHAT:
         report = get_report(user_id, "premium")
         if not report or report["status"] != "ready":
-            await send_message(user_id, "Сначала пройдите анкету.", [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT}]])
+            await send_message(user_id, "Сначала пройдите анкету и получите план.", [[{"type": "callback", "text": "📊 Получить план", "payload": CALLBACK_AUDIT}]])
             save_user_state(user_id, STATE_MENU, {})
             return
         save_chat_message(user_id, "user", text)
-        if any(kw in text.lower() for kw in ["настрой", "сделай", "воронку", "таргет", "внедрение"]):
-            ans = "🔥 Это задача для профессионального внедрения. Оставьте заявку."
+        if any(kw in text.lower() for kw in ["настрой", "сделай", "воронку", "таргет", "внедрение", "яндекс директ"]):
+            ans = "🔥 Это задача для профессионального внедрения. Если хотите, чтобы я лично настроил вам воронку или рекламу — оставьте заявку через кнопку «🎯 Записаться». Я свяжусь с вами."
             await send_message(user_id, ans, get_implementation_keyboard())
         else:
             await send_message(user_id, "🤔 Думаю...", None)
             hist = get_chat_history(user_id, 10)
             ans = await call_deepseek_chat(text, user_id, report["text"], hist)
-            ans += "\n\n📜 *Листай вверх к началу плана*"
+            ans += "\n\n📌 *Листай вверх к началу плана, если нужны детали*"
             await send_message(user_id, ans, get_ai_keyboard())
         save_chat_message(user_id, "assistant", ans)
         return
 
     if state == STATE_AWAITING_IMPLEMENTATION:
         await notify_producer(f"📞 ЗАЯВКА НА ВНЕДРЕНИЕ\nПользователь: {user_id}\nЗапрос: {text}")
-        await send_message(user_id, "✅ Заявка принята!", get_main_menu_keyboard())
+        await send_message(user_id, "✅ Заявка принята! Продюсер свяжется с вами.", get_main_menu_keyboard())
         save_user_state(user_id, STATE_MENU, {})
         return
 
     if state == STATE_AWAITING_FEEDBACK_REASON:
         save_feedback(user_id, 0, text)
-        await send_message(user_id, "Спасибо за отзыв! Попробуете ещё раз?", get_start_keyboard())
+        await send_message(user_id, "Спасибо за честность! Я учту это и постараюсь быть полезнее.\n\nПопробуете пройти анкету заново или записаться на консультацию?", get_start_keyboard())
         save_user_state(user_id, STATE_MENU, {})
         return
 
@@ -594,12 +686,10 @@ async def process_message(user_id: str, text: str):
 async def process_callback(chat_id: str, callback_id: str, callback_data: str):
     state, _ = get_user_state(chat_id)
 
-    # === ОБРАБОТКА КНОПКИ "НАЧАТЬ" ОТ ПЛАТФОРМЫ ===
+    # Обработка системной кнопки "Начать"
     if callback_data in ("start", "get_started", "START", "", None) or callback_data == "start" or callback_data == "get_started":
         save_user_state(chat_id, STATE_MENU, {})
-        await send_callback_answer(callback_id,
-            "👋 Привет! Я Вероника, продюсер экспертов.\n\nХотите маркетинговый план или записаться на консультацию?",
-            get_start_keyboard())
+        await send_callback_answer(callback_id, WELCOME_TEXT, get_start_keyboard())
         return
 
     if callback_data == CALLBACK_MENU:
@@ -609,7 +699,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
 
     if callback_data == CALLBACK_START_SURVEY:
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {})
-        await send_callback_answer(callback_id, "Напишите название проекта:", None)
+        await send_callback_answer(callback_id, "Введите название вашего проекта:", None)
         return
 
     if callback_data == CALLBACK_RESET:
@@ -619,65 +709,65 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
 
     if callback_data == CALLBACK_AUDIT:
         if state in (STATE_SURVEY, STATE_AWAITING_BUSINESS_NAME, STATE_AWAITING_BUSINESS_DESCRIPTION):
-            await send_callback_answer(callback_id, "Анкета уже запущена. Сбросить?", [[{"type": "callback", "text": "🔄 Да, сбросить", "payload": CALLBACK_RESET}]])
+            await send_callback_answer(callback_id, "Вы уже в процессе анкеты. Если хотите начать заново — нажмите сброс.", [[{"type": "callback", "text": "🔄 Сбросить", "payload": CALLBACK_RESET}]])
             return
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {})
-        await send_callback_answer(callback_id, "Введите название проекта:", None)
+        await send_callback_answer(callback_id, "Введите название вашего проекта:", None)
         return
 
     if callback_data == CALLBACK_ASK_AI:
         report = get_report(chat_id, "premium")
         if not report or report["status"] != "ready":
-            await send_callback_answer(callback_id, "Сначала пройдите анкету.", [[{"type": "callback", "text": "📊 Пройти", "payload": CALLBACK_AUDIT}]])
+            await send_callback_answer(callback_id, "Сначала получите план.", [[{"type": "callback", "text": "📊 Получить план", "payload": CALLBACK_AUDIT}]])
             return
         save_user_state(chat_id, STATE_AI_CHAT, {})
-        await send_callback_answer(callback_id, "Задавайте вопросы по плану.", None)
+        await send_callback_answer(callback_id, get_ai_value_text() + "\n\nЗадавайте вопросы по вашему плану.", None)
         return
 
     if callback_data == CALLBACK_BOOK_CONSULT:
-        save_user_state(chat_id, STATE_AWAITING_CONSULT_PHONE, {})
-        await send_callback_answer(callback_id, "Укажите ваш телефон:", get_consult_keyboard_phone())
+        save_user_state(chat_id, STATE_AWAITING_CONSULT_TIME, {})
+        await send_callback_answer(callback_id, get_consultation_value_text() + "\n\nУкажите удобное время для звонка (например, завтра в 15:00):", get_consult_time_keyboard())
         return
 
     if callback_data == CALLBACK_FEEDBACK_YES:
         save_feedback(chat_id, 1)
-        await send_callback_answer(callback_id, "Рад, что помогло!", get_after_plan_keyboard())
+        await send_callback_answer(callback_id, "Отлично! Рад, что помогло. Что дальше?", get_after_plan_keyboard())
         return
 
     if callback_data == CALLBACK_FEEDBACK_NO:
-        await send_callback_answer(callback_id, "Напишите кратко, чего не хватило:", None)
+        await send_callback_answer(callback_id, "Напишите кратко, чего не хватило (2-3 слова):", None)
         save_user_state(chat_id, STATE_AWAITING_FEEDBACK_REASON, {})
         return
 
     if callback_data == CALLBACK_IMPLEMENTATION:
         save_user_state(chat_id, STATE_AWAITING_IMPLEMENTATION, {})
-        await send_callback_answer(callback_id, "Опишите, что нужно внедрить:", None)
+        await send_callback_answer(callback_id, "Опишите, что именно нужно внедрить (воронка, реклама, скрипты):", None)
         return
 
     # Челлендж
     if callback_data == CALLBACK_CHALLENGE_TASK:
         report = get_report(chat_id, "premium")
         if not report or report["status"] != "ready":
-            await send_callback_answer(callback_id, "Сначала получите план.", [[{"type": "callback", "text": "📊 Пройти анкету", "payload": CALLBACK_AUDIT}]])
+            await send_callback_answer(callback_id, "Сначала получите план.", [[{"type": "callback", "text": "📊 Получить план", "payload": CALLBACK_AUDIT}]])
             return
         chall = get_active_challenge(chat_id)
         if not chall:
             cid = start_new_challenge(chat_id)
             task = await generate_challenge_task(chat_id, 1, report["text"])
             save_challenge_task(cid, 1, task)
-            await send_callback_answer(callback_id, f"🏆 Челлендж начался!\n\n{task}", get_challenge_keyboard())
+            await send_callback_answer(callback_id, get_challenge_value_text() + f"\n\n🏆 Челлендж начался!\n\n{task}", get_challenge_keyboard())
         else:
             cur = get_current_task(chall["id"], chall["current_day"])
             if cur and not cur["is_completed"]:
                 await send_callback_answer(callback_id, f"📋 Задание дня {chall['current_day']}:\n\n{cur['task_text']}", get_challenge_keyboard())
             else:
-                await send_callback_answer(callback_id, f"Прогресс: день {chall['current_day']} из 14, выполнено {chall['tasks_completed']}", get_challenge_keyboard())
+                await send_callback_answer(callback_id, f"Прогресс: день {chall['current_day']} из 14, выполнено {chall['tasks_completed']} заданий.\nНажмите «Задание на сегодня», чтобы получить новое.", get_challenge_keyboard())
         return
 
     if callback_data == CALLBACK_CHALLENGE_DONE:
         chall = get_active_challenge(chat_id)
         if not chall:
-            await send_callback_answer(callback_id, "Нет активного челленджа.", get_main_menu_keyboard())
+            await send_callback_answer(callback_id, "Нет активного челленджа. Нажмите «Челлендж 14 дней» для старта.", get_main_menu_keyboard())
             return
         cur = get_current_task(chall["id"], chall["current_day"])
         if not cur or cur["is_completed"]:
@@ -686,14 +776,14 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         mark_task_completed(chall["id"], chall["current_day"])
         if chall["current_day"] >= 14:
             complete_challenge(chall["id"])
-            await send_callback_answer(callback_id, "🎉 Поздравляю! Челлендж пройден!", get_after_plan_keyboard())
+            await send_callback_answer(callback_id, "🎉 ПОЗДРАВЛЯЮ! Ты прошёл 14-дневный челлендж! Теперь у тебя есть система, которая приносит заявки.\n\nЧто дальше? Запишись на консультацию, чтобы масштабировать результат.", get_after_plan_keyboard())
         else:
             new_day = chall["current_day"] + 1
             advance_challenge_day(chall["id"], new_day)
             report = get_report(chat_id, "premium")
             new_task = await generate_challenge_task(chat_id, new_day, report["text"])
             save_challenge_task(chall["id"], new_day, new_task)
-            await send_callback_answer(callback_id, f"✅ Задание дня {chall['current_day']} выполнено!\n\nЗадание дня {new_day}:\n{new_task}", get_challenge_keyboard())
+            await send_callback_answer(callback_id, f"✅ Задание дня {chall['current_day']} выполнено!\n\n🏆 Прогресс: {chall['tasks_completed']+1} заданий\n\n💪 ЗАДАНИЕ ДЕНЬ {new_day}\n\n{new_task}", get_challenge_keyboard())
         return
 
     if callback_data == CALLBACK_CHALLENGE_PROGRESS:
@@ -701,10 +791,10 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         if not chall:
             await send_callback_answer(callback_id, "Нет активного челленджа.", get_main_menu_keyboard())
             return
-        await send_callback_answer(callback_id, f"Прогресс: день {chall['current_day']} из 14, выполнено {chall['tasks_completed']}", get_challenge_keyboard())
+        await send_callback_answer(callback_id, f"🏆 Твой прогресс:\nДень {chall['current_day']} из 14\nВыполнено: {chall['tasks_completed']}\nОсталось: {14 - chall['current_day']}\n\nПродолжай выполнять задания!", get_challenge_keyboard())
         return
 
-    # Обработка анкеты
+    # Обработка анкеты (без изменений)
     if callback_data in [Q1_SERVICE, Q1_INFO, Q1_CONSULT, Q1_NONE, Q2_LT5, Q2_5_20, Q2_20_50, Q2_50P,
                          Q3_LT10, Q3_10_50, Q3_50_200, Q3_200P, Q4_300, Q4_500, Q4_1M, Q4_SCALE,
                          Q5_YES, Q5_NO, Q5_PROGRESS]:
@@ -734,21 +824,21 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                     return
                 else:
                     save_report(chat_id, "premium", "")
-                    await send_callback_answer(callback_id, "🔍 Запускаю анализ...", None)
+                    await send_callback_answer(callback_id, "🔍 Запускаю анализ...\n\nПока нейросеть работает, я подготовлю для вас максимум пользы.", None)
                     await send_animation(chat_id)
                     report_text = await call_deepseek_marketing_plan(biz["name"], biz["description"], ud["answers"], chat_id)
                     if not report_text:
-                        await send_message(chat_id, "❌ Не удалось сгенерировать план.", get_main_menu_keyboard())
+                        await send_message(chat_id, "❌ Не удалось сгенерировать план. Попробуйте позже.", get_main_menu_keyboard())
                         update_report_status(chat_id, "failed")
                         return
                     save_report(chat_id, "premium", report_text)
                 final = report_text + "\n\n📜 *Листай вверх к началу плана*"
-                await send_long_message(chat_id, "✅ ВАШ ПЛАН ГОТОВ!\n\n" + final, None)
+                await send_long_message(chat_id, "✅ ВАШ МАРКЕТИНГОВЫЙ ПЛАН ГОТОВ!\n\n" + final, None)
                 await asyncio.sleep(2)
-                await send_message(chat_id, "Было полезно?", get_feedback_keyboard())
+                await send_message(chat_id, "Было полезно? Поделитесь мнением — это поможет улучшить сервис.", get_feedback_keyboard())
         return
 
-    await send_callback_answer(callback_id, "Неизвестная команда.", get_main_menu_keyboard())
+    await send_callback_answer(callback_id, "Неизвестная команда. Используйте меню.", get_main_menu_keyboard())
 
 # === НАПОМИНАНИЯ ===
 async def reminders_task():
@@ -764,11 +854,11 @@ async def reminders_task():
             for user_id, ready_at, sent24, sent7 in rows:
                 delta = get_moscow_time() - datetime.fromisoformat(ready_at)
                 if not sent24 and delta >= timedelta(hours=24):
-                    await send_message(user_id, "📌 Напоминание: начните с первого пункта плана. Если нужна помощь — задайте вопрос AI.", None)
+                    await send_message(user_id, "📌 Напоминаю: твой маркетинговый план ждёт внедрения. Выбери один пункт и сделай сегодня. Если застрял — задай вопрос AI или запишись на консультацию.", None)
                     update_reminder_flags(user_id, reminder_24h=True)
                     await asyncio.sleep(2)
                 if not sent7 and delta >= timedelta(days=7):
-                    await send_message(user_id, "🔥 7 дней прошло! 70% клиентов получают первые деньги за 2 недели. Продолжайте, запишитесь на консультацию при необходимости.", None)
+                    await send_message(user_id, "🔥 7 дней! Большинство моих клиентов получают первые деньги через 2 недели. Продолжай выполнять задания челленджа. Если результат ещё не пришёл — самое время записаться на разбор со мной. Кнопка в меню.", None)
                     update_reminder_flags(user_id, reminder_7d=True)
                     await asyncio.sleep(2)
             conn.close()
@@ -786,7 +876,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot running", "version": "10.5"}
+    return {"status": "Salesplan bot running", "version": "10.6"}
 
 @app.get("/health")
 async def health():
@@ -813,7 +903,7 @@ async def webhook(request: Request):
         return Response(status_code=200)
     except Exception as e:
         logger.error(f"Webhook error: {traceback.format_exc()}")
-        return Response(status_code=200)  # возвращаем 200 чтобы MAX не дублировал
+        return Response(status_code=200)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8001"))
