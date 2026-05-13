@@ -811,26 +811,6 @@ async def webhook(request: Request):
         logger.error(f"Webhook error: {traceback.format_exc()}")
         return Response(status_code=200)
 
-@app.get("/subscribe_me")
-async def subscribe_to_bot_events():
-    import requests
-    token = MAX_BOT_TOKEN
-    url = "https://platform-api.max.ru/subscriptions"
-    headers = {"Authorization": token, "Content-Type": "application/json"}
-    payload = {
-        "url": "https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/webhook",
-        "update_types": ["message_created", "bot_started"]
-    }
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        return {
-            "status": response.status_code,
-            "response": response.json() if response.text else None,
-            "text": response.text
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8001"))
     uvicorn.run(app, host="0.0.0.0", port=port)
