@@ -762,8 +762,7 @@ async def subscribe_to_bot_events():
     url = "https://platform-api.max.ru/subscriptions"
     headers = {"Authorization": token, "Content-Type": "application/json"}
     payload = {
-        "url": "https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/webhook",
-        "update_types": ["message_created", "bot_started", "callback"]  # изменили
+        "url": "https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/webhook"
     }
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=30)
