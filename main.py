@@ -1,23 +1,21 @@
-# File: main.py — бот Salesplan (версия 11.0) с использованием библиотеки maxapi
+# File: main.py — бот Salesplan (версия 10.14: исправлена кнопка "Да, хочу маркетинговый план")
 
 import asyncio
 import logging
 import sqlite3
 import os
 import json
+import traceback
 import re
-import requests
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, Any
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
+import aiohttp
+import requests
 import uvicorn
-
-from maxapi import Bot, Dispatcher
-from maxapi.types import BotStarted, Command, MessageCreated, CallbackQuery
-from maxapi.keyboards import InlineKeyboardBuilder
 
 load_dotenv()
 
@@ -25,10 +23,10 @@ load_dotenv()
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJp3NEa7OYZr1MKfUuC1hYDyKh2f4HFkfTXT88W3txWaBaFQmU")
-CONSULT_LINK = os.getenv("CONSULT_LINK", "https://max.ru/u/f9LHodD0cOJmqGaOJJxBthmX1NCjnOXHlsnYzYTc83uuDLwN4j08I-fmU4U")
+CONSULT_LINK = "https://max.ru/u/f9LHodD0cOJmqGaOJJxBthmX1NCjnOXHlsnYzYTc83uuDLwN4j08I-fmU4U"
 
 if not MAX_BOT_TOKEN:
-    raise RuntimeError("MAX_BOT_TOKEN not found in .env")
+    raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in .env")
 
 LOGS_DIR = Path("./logs")
 LOGS_DIR.mkdir(exist_ok=True)
@@ -43,150 +41,167 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# === БАЗА ДАННЫХ ===
 DB_PATH = "salesplan_bot.db"
 
-def init_db():
+# === СОСТОЯНИЯ ===
+STATE_MENU = "menu"
+STATE_AWAITING_BUSINESS_NAME = "awaiting_business_name"
+STATE_AWAITING_BUSINESS_DESCRIPTION = "awaiting_business_description"
+STATE_SURVEY = "survey"
+STATE_AI_CHAT = "ai_chat"
+STATE_AWAITING_IMPLEMENTATION = "awaiting_implementation"
+STATE_AWAITING_FEEDBACK_REASON = "awaiting_feedback_reason"
+
+CALLBACK_AUDIT = "audit"
+CALLBACK_ASK_AI = "ask_ai"
+CALLBACK_CHALLENGE_TASK = "challenge_task"
+CALLBACK_CHALLENGE_DONE = "challenge_done"
+CALLBACK_CHALLENGE_PROGRESS = "challenge_progress"
+CALLBACK_IMPLEMENTATION = "implementation"
+CALLBACK_MENU = "menu"
+CALLBACK_RESET = "reset"
+CALLBACK_FEEDBACK_YES = "feedback_yes"
+CALLBACK_FEEDBACK_NO = "feedback_no"
+CALLBACK_START_SURVEY = "start_survey"   # добавлено
+CALLBACK_BOOK_CONSULT = "book_consult"
+
+# === ОПРОСНИК ===
+Q1_SERVICE = "q1_service"
+Q1_INFO = "q1_info"
+Q1_CONSULT = "q1_consult"
+Q1_NONE = "q1_none"
+Q2_LT5 = "q2_lt5"
+Q2_5_20 = "q2_5_20"
+Q2_20_50 = "q2_20_50"
+Q2_50P = "q2_50p"
+Q3_LT10 = "q3_lt10"
+Q3_10_50 = "q3_10_50"
+Q3_50_200 = "q3_50_200"
+Q3_200P = "q3_200p"
+Q4_300 = "q4_300"
+Q4_500 = "q4_500"
+Q4_1M = "q4_1m"
+Q4_SCALE = "q4_scale"
+Q5_YES = "q5_yes"
+Q5_NO = "q5_no"
+Q5_PROGRESS = "q5_progress"
+
+SURVEY_QUESTIONS = [
+    {"key": "q1", "text": "Что вы продаёте?", "options": [(Q1_SERVICE, "Услугу"), (Q1_INFO, "Инфопродукт"), (Q1_CONSULT, "Консультацию"), (Q1_NONE, "Пока не продаю")]},
+    {"key": "q2", "text": "Средний чек (₽)", "options": [(Q2_LT5, "до 5 000 ₽"), (Q2_5_20, "5 000 - 20 000 ₽"), (Q2_20_50, "20 000 - 50 000 ₽"), (Q2_50P, "более 50 000 ₽")]},
+    {"key": "q3", "text": "Клиентов в месяц", "options": [(Q3_LT10, "менее 10"), (Q3_10_50, "10-50"), (Q3_50_200, "50-200"), (Q3_200P, "более 200")]},
+    {"key": "q4", "text": "Цель на 2026", "options": [(Q4_300, "300 000 ₽/мес"), (Q4_500, "500 000 ₽/мес"), (Q4_1M, "1 000 000 ₽/мес"), (Q4_SCALE, "Масштабирование")]},
+    {"key": "q5", "text": "Уже есть автоворонка?", "options": [(Q5_YES, "Да"), (Q5_NO, "Нет"), (Q5_PROGRESS, "В разработке")]},
+]
+
+# === БАЗА ДАННЫХ ===
+def init_bot_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_state (
-            user_id TEXT PRIMARY KEY,
-            state TEXT,
-            data TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS business_data (
-            user_id TEXT PRIMARY KEY,
-            business_name TEXT,
-            business_description TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS forms (
-            user_id TEXT PRIMARY KEY,
-            q1 TEXT, q2 TEXT, q3 TEXT, q4 TEXT, q5 TEXT,
-            completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            report_text TEXT,
-            status TEXT DEFAULT 'generating',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            ready_at TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            message TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS challenges (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            current_day INTEGER DEFAULT 1,
-            tasks_completed INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'active'
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS challenge_tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            challenge_id INTEGER NOT NULL,
-            day_number INTEGER NOT NULL,
-            task_text TEXT NOT NULL,
-            is_completed BOOLEAN DEFAULT 0,
-            completed_at TIMESTAMP
-        )
-    """)
+    conn.execute("CREATE TABLE IF NOT EXISTS user_state (user_id TEXT PRIMARY KEY, state TEXT, data TEXT, updated_at TIMESTAMP)")
+    conn.execute("CREATE TABLE IF NOT EXISTS business_data (user_id TEXT PRIMARY KEY, business_name TEXT, business_description TEXT, created_at TIMESTAMP, reminder_sent_24h BOOLEAN DEFAULT 0, reminder_sent_7d BOOLEAN DEFAULT 0)")
+    conn.execute("CREATE TABLE IF NOT EXISTS forms (user_id TEXT PRIMARY KEY, q1 TEXT, q2 TEXT, q3 TEXT, q4 TEXT, q5 TEXT, completed_at TIMESTAMP)")
+    conn.execute("CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, report_type TEXT NOT NULL, report_text TEXT, status TEXT DEFAULT 'generating', created_at TIMESTAMP, ready_at TIMESTAMP)")
+    conn.execute("CREATE TABLE IF NOT EXISTS challenges (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, start_date TIMESTAMP, current_day INTEGER, tasks_completed INTEGER, status TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS challenge_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, challenge_id INTEGER NOT NULL, day_number INTEGER NOT NULL, task_text TEXT NOT NULL, is_completed BOOLEAN, completed_at TIMESTAMP)")
+    conn.execute("CREATE TABLE IF NOT EXISTS chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, role TEXT NOT NULL, message TEXT NOT NULL, created_at TIMESTAMP)")
+    conn.execute("CREATE TABLE IF NOT EXISTS deepseek_queries (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, query_type TEXT NOT NULL, prompt TEXT, created_at TIMESTAMP)")
+    conn.execute("CREATE TABLE IF NOT EXISTS feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, rating INTEGER, reason TEXT, created_at TIMESTAMP)")
     conn.commit()
     conn.close()
 
-init_db()
+init_bot_db()
 
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 def get_moscow_time():
     return datetime.utcnow() + timedelta(hours=3)
 
-def get_user_state(user_id: str) -> tuple[str, Dict]:
+def format_moscow_time(dt=None):
+    if dt is None: dt = get_moscow_time()
+    return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+def log_event(user_id: str, event_type: str, event_data: str = None):
+    logger.info(f"Event: {event_type} | User: {user_id} | Data: {event_data}")
+
+def log_deepseek_query(user_id: str, query_type: str, prompt: str):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("INSERT INTO deepseek_queries (user_id, query_type, prompt) VALUES (?, ?, ?)", (user_id, query_type, prompt))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to log: {e}")
+
+def get_user_state(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute("SELECT state, data FROM user_state WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
     if row:
         return row[0], json.loads(row[1]) if row[1] else {}
-    return "menu", {}
+    return STATE_MENU, {}
 
-def save_user_state(user_id: str, state: str, data: Dict = None):
+def save_user_state(user_id: str, state: str, data: dict = None):
     conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT OR REPLACE INTO user_state (user_id, state, data, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-        (user_id, state, json.dumps(data or {}, ensure_ascii=False))
-    )
+    conn.execute("INSERT OR REPLACE INTO user_state (user_id, state, data, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                 (user_id, state, json.dumps(data or {}, ensure_ascii=False)))
     conn.commit()
     conn.close()
 
 def save_business_data(user_id: str, name: str, description: str):
     conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT OR REPLACE INTO business_data (user_id, business_name, business_description) VALUES (?, ?, ?)",
-        (user_id, name, description)
-    )
+    conn.execute("INSERT OR REPLACE INTO business_data (user_id, business_name, business_description, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                 (user_id, name, description))
     conn.commit()
     conn.close()
 
 def get_business_data(user_id: str):
     conn = sqlite3.connect(DB_PATH)
-    row = conn.execute("SELECT business_name, business_description FROM business_data WHERE user_id = ?", (user_id,)).fetchone()
+    row = conn.execute("SELECT business_name, business_description, reminder_sent_24h, reminder_sent_7d FROM business_data WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
     if row:
-        return {"name": row[0], "description": row[1]}
+        return {"name": row[0], "description": row[1], "reminder_sent_24h": bool(row[2]), "reminder_sent_7d": bool(row[3])}
     return None
 
-def save_form(user_id: str, answers: Dict):
+def update_reminder_flags(user_id: str, reminder_24h: bool = None, reminder_7d: bool = None):
     conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT OR REPLACE INTO forms (user_id, q1, q2, q3, q4, q5) VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, answers.get("q1"), answers.get("q2"), answers.get("q3"), answers.get("q4"), answers.get("q5"))
-    )
+    if reminder_24h is not None:
+        conn.execute("UPDATE business_data SET reminder_sent_24h = ? WHERE user_id = ?", (reminder_24h, user_id))
+    if reminder_7d is not None:
+        conn.execute("UPDATE business_data SET reminder_sent_7d = ? WHERE user_id = ?", (reminder_7d, user_id))
     conn.commit()
     conn.close()
 
-def get_form(user_id: str):
+def save_form(user_id: str, answers: dict):
     conn = sqlite3.connect(DB_PATH)
-    row = conn.execute("SELECT q1, q2, q3, q4, q5 FROM forms WHERE user_id = ?", (user_id,)).fetchone()
-    conn.close()
-    if row:
-        return {"q1": row[0], "q2": row[1], "q3": row[2], "q4": row[3], "q5": row[4]}
-    return None
-
-def save_report(user_id: str, report_text: str):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT OR REPLACE INTO reports (user_id, report_text, status, ready_at) VALUES (?, ?, 'ready', CURRENT_TIMESTAMP)",
-        (user_id, report_text)
-    )
+    conn.execute("INSERT OR REPLACE INTO forms (user_id, q1, q2, q3, q4, q5, completed_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                 (user_id, answers["q1"], answers["q2"], answers["q3"], answers["q4"], answers["q5"]))
     conn.commit()
     conn.close()
 
-def get_report(user_id: str):
+def save_report(user_id: str, report_type: str, report_text: str):
     conn = sqlite3.connect(DB_PATH)
-    row = conn.execute("SELECT report_text, status FROM reports WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,)).fetchone()
+    conn.execute("INSERT OR REPLACE INTO reports (user_id, report_type, report_text, status, ready_at) VALUES (?, ?, ?, 'ready', CURRENT_TIMESTAMP)",
+                 (user_id, report_type, report_text))
+    conn.commit()
     conn.close()
-    if row:
-        return {"text": row[0], "status": row[1]}
-    return None
+
+def update_report_status(user_id: str, status: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE reports SET status = ? WHERE user_id = ? AND report_type = 'premium'", (status, user_id))
+    conn.commit()
+    conn.close()
+
+def get_report(user_id: str, report_type: str):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("SELECT report_text, status FROM reports WHERE user_id = ? AND report_type = ? ORDER BY created_at DESC LIMIT 1", (user_id, report_type)).fetchone()
+    conn.close()
+    return {"text": row[0], "status": row[1]} if row else None
+
+def save_feedback(user_id: str, rating: int, reason: str = None):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("INSERT INTO feedback (user_id, rating, reason) VALUES (?, ?, ?)", (user_id, rating, reason))
+    conn.commit()
+    conn.close()
 
 def save_chat_message(user_id: str, role: str, message: str):
     conn = sqlite3.connect(DB_PATH)
@@ -204,9 +219,7 @@ def get_active_challenge(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute("SELECT id, current_day, tasks_completed FROM challenges WHERE user_id = ? AND status = 'active' ORDER BY start_date DESC LIMIT 1", (user_id,)).fetchone()
     conn.close()
-    if row:
-        return {"id": row[0], "current_day": row[1], "tasks_completed": row[2]}
-    return None
+    return {"id": row[0], "current_day": row[1], "tasks_completed": row[2]} if row else None
 
 def start_new_challenge(user_id: str) -> int:
     conn = sqlite3.connect(DB_PATH)
@@ -224,9 +237,7 @@ def get_current_task(challenge_id: int, day: int):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute("SELECT id, task_text, is_completed FROM challenge_tasks WHERE challenge_id = ? AND day_number = ?", (challenge_id, day)).fetchone()
     conn.close()
-    if row:
-        return {"id": row[0], "task_text": row[1], "is_completed": bool(row[2])}
-    return None
+    return {"id": row[0], "task_text": row[1], "is_completed": bool(row[2])} if row else None
 
 def mark_task_completed(challenge_id: int, day: int):
     conn = sqlite3.connect(DB_PATH)
@@ -247,15 +258,60 @@ def complete_challenge(challenge_id: int):
     conn.commit()
     conn.close()
 
+# === ОТПРАВКА СООБЩЕНИЙ ===
+async def send_message(chat_id: str, text: str, keyboard: list = None):
+    url = f"https://platform-api.max.ru/messages?user_id={chat_id}"
+    payload = {"text": text}
+    if keyboard:
+        payload["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": keyboard}}]
+    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status != 200:
+                logger.error(f"send_message failed: {resp.status} - {await resp.text()}")
+            return await resp.text()
+
+async def send_long_message(chat_id: str, text: str, keyboard: list = None):
+    max_len = 3900
+    if len(text) <= max_len:
+        await send_message(chat_id, text, keyboard)
+        return
+    await send_message(chat_id, text[:max_len], None)
+    remaining = text[max_len:]
+    while remaining:
+        part = remaining[:max_len]
+        await send_message(chat_id, part, None)
+        remaining = remaining[max_len:]
+    if keyboard:
+        await send_message(chat_id, "⬆️ Продолжение выше. Что дальше?", keyboard)
+
+async def send_callback_answer(callback_id: str, text: str, keyboard: list = None):
+    url = f"https://platform-api.max.ru/answers?callback_id={callback_id}"
+    payload = {"message": {"text": text}}
+    if keyboard:
+        payload["message"]["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": keyboard}}]
+    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status != 200:
+                logger.error(f"send_callback_answer failed: {resp.status} - {await resp.text()}")
+            return await resp.text()
+
+async def send_animation(user_id: str):
+    steps = ["🔍 Готовим ваш маркетинговый план...\n\n⏳ 1/4", "📊 Раскладываем точки роста...\n\n⏳ 2/4", "🎯 Настраиваем прицел на первые деньги...\n\n⏳ 3/4", "📝 Формируем дорожную карту...\n\n⏳ 4/4"]
+    for step in steps:
+        await send_message(user_id, step, None)
+        await asyncio.sleep(2)
+
 # === DEEPSEEK API ===
-async def call_deepseek_marketing_plan(name: str, description: str, answers: dict) -> str:
+async def call_deepseek_marketing_plan(name: str, description: str, answers: dict, user_id: str = None) -> str:
     if not DEEPSEEK_API_KEY:
         return None
-    q1_map = {"q1_service": "Услугу", "q1_info": "Инфопродукт", "q1_consult": "Консультацию", "q1_none": "Пока не продаю"}
-    q2_map = {"q2_lt5": "до 5000 ₽", "q2_5_20": "5000-20000 ₽", "q2_20_50": "20000-50000 ₽", "q2_50p": "более 50000 ₽"}
-    q3_map = {"q3_lt10": "менее 10", "q3_10_50": "10-50", "q3_50_200": "50-200", "q3_200p": "более 200"}
-    q4_map = {"q4_300": "300 000 ₽/мес", "q4_500": "500 000 ₽/мес", "q4_1m": "1 000 000 ₽/мес", "q4_scale": "масштабирование"}
-    q5_map = {"q5_yes": "да", "q5_no": "нет", "q5_progress": "в разработке"}
+    q1_map = {Q1_SERVICE: "Услугу", Q1_INFO: "Инфопродукт", Q1_CONSULT: "Консультацию", Q1_NONE: "Пока не продаю"}
+    q2_map = {Q2_LT5: "до 5000 ₽", Q2_5_20: "5000-20000 ₽", Q2_20_50: "20000-50000 ₽", Q2_50P: "более 50000 ₽"}
+    q3_map = {Q3_LT10: "менее 10", Q3_10_50: "10-50", Q3_50_200: "50-200", Q3_200P: "более 200"}
+    q4_map = {Q4_300: "300 000 ₽/мес", Q4_500: "500 000 ₽/мес", Q4_1M: "1 000 000 ₽/мес", Q4_SCALE: "масштабирование"}
+    q5_map = {Q5_YES: "да", Q5_NO: "нет", Q5_PROGRESS: "в разработке"}
     survey_info = f"""
 ДАННЫЕ О БИЗНЕСЕ:
 • Продаёт: {q1_map.get(answers.get('q1'), 'не указано')}
@@ -273,45 +329,35 @@ async def call_deepseek_marketing_plan(name: str, description: str, answers: dic
 ВАЖНО: НЕ используй Instagram, Telegram, WhatsApp. Только VK, Яндекс.Директ, автоворонка в MAX.
 Требования: только конкретные шаги, без общих фраз. Приведи 1-2 примера. Не используй форматирование.
 Структура: 1. РЕАЛЬНОСТЬ 2. КОНКУРЕНТЫ 3. ТВОЙ КЛИЕНТ 4. СИЛЬНЫЕ И СЛАБЫЕ СТОРОНЫ 5. ВОРОНКА 6. ПЛАН НА МЕСЯЦ"""
-    url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-    data = {
-        "model": "deepseek-chat",
-        "messages": [{"role": "system", "content": "Ты — бизнес-консультант."}, {"role": "user", "content": prompt}],
-        "temperature": 0.5,
-        "max_tokens": 4000
-    }
+    if user_id:
+        log_deepseek_query(user_id, "marketing_plan", prompt)
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=120)
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
+        resp = requests.post("https://api.deepseek.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "deepseek-chat", "messages": [{"role": "system", "content": "Ты — бизнес-консультант."}, {"role": "user", "content": prompt}], "temperature": 0.5, "max_tokens": 4000},
+            timeout=120)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"]
         return None
     except Exception as e:
         logger.error(f"DeepSeek error: {e}")
         return None
 
-async def call_deepseek_chat(question: str, report_text: str, history: list) -> str:
-    if not DEEPSEEK_API_KEY:
-        return "Извините, AI-чат временно недоступен."
+async def call_deepseek_chat(question: str, user_id: str, report_text: str, history: list) -> str:
     history_text = "\n".join([f"{m['role']}: {m['message']}" for m in history[-5:]])
     prompt = f"""Вот план: {report_text[:3000]} \nИстория: {history_text}\nВопрос: {question}\nОтветь по делу, без воды. Если просит настройку — скажи оставить заявку.
 Ограничения: без Instagram/Telegram, только VK, Яндекс.Директ, MAX."""
-    url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-    data = {
-        "model": "deepseek-chat",
-        "messages": [{"role": "system", "content": "Ты — консультант."}, {"role": "user", "content": prompt}],
-        "temperature": 0.5,
-        "max_tokens": 1000
-    }
+    log_deepseek_query(user_id, "chat_question", prompt)
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=60)
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
-        return "Ошибка, попробуйте позже."
+        resp = requests.post("https://api.deepseek.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "deepseek-chat", "messages": [{"role": "system", "content": "Ты — консультант."}, {"role": "user", "content": prompt}], "temperature": 0.5, "max_tokens": 1000},
+            timeout=60)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"]
+        return "Ошибка, попробуй позже."
     except Exception as e:
-        logger.error(f"DeepSeek chat error: {e}")
-        return "Ошибка соединения."
+        return f"Ошибка: {e}"
 
 async def generate_challenge_task(user_id: str, day: int, report_text: str) -> str:
     if not DEEPSEEK_API_KEY:
@@ -326,18 +372,14 @@ async def generate_challenge_task(user_id: str, day: int, report_text: str) -> s
 [2-3 шага]
 ПОЧЕМУ ЭТО ВАЖНО:
 [одно предложение]"""
-    url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-    data = {
-        "model": "deepseek-chat",
-        "messages": [{"role": "system", "content": "Ты — наставник. Только одно действие, без списков."}, {"role": "user", "content": prompt}],
-        "temperature": 0.3,
-        "max_tokens": 600
-    }
+    log_deepseek_query(user_id, "challenge_task", prompt)
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=60)
-        if response.status_code == 200:
-            task = response.json()["choices"][0]["message"]["content"]
+        resp = requests.post("https://api.deepseek.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "deepseek-chat", "messages": [{"role": "system", "content": "Ты — наставник. Только одно действие, без списков."}, {"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 600},
+            timeout=60)
+        if resp.status_code == 200:
+            task = resp.json()["choices"][0]["message"]["content"]
             if len(task) < 50:
                 return fallback_task(day)
             return task
@@ -355,384 +397,416 @@ def fallback_task(day: int) -> str:
 3. Опубликуй и ответь трём первым комментаторам.
 
 ПОЧЕМУ ЭТО ВАЖНО:
-Ты получишь первых лидов и обратную связь."""
+Ты увидишь реальный спрос и начнёшь получать заявки."""
 
 # === КЛАВИАТУРЫ ===
-def get_main_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="📊 Получить маркетинговый план", callback_data="survey")
-    builder.button(text="💬 Задать вопрос AI", callback_data="ai_chat")
-    builder.button(text="🏆 Челлендж 14 дней", callback_data="challenge")
-    builder.button(text="🎯 Консультация", url=CONSULT_LINK)
-    builder.button(text="🆘 Помощь", url=HELP_URL)
-    builder.adjust(1)
-    return builder.as_markup()
-
-def get_start_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Да, хочу маркетинговый план за 2 минуты", callback_data="start_survey")
-    builder.button(text="🎯 Записаться на консультацию", url=CONSULT_LINK)
-    builder.button(text="🆘 Помощь", url=HELP_URL)
-    builder.adjust(1)
-    return builder.as_markup()
-
-def get_survey_keyboard(step: int):
-    # step: 0..4 для 5 вопросов
-    questions = [
-        ("Что вы продаёте?", [("Услугу", "q1_service"), ("Инфопродукт", "q1_info"), ("Консультацию", "q1_consult"), ("Пока не продаю", "q1_none")]),
-        ("Средний чек (₽)", [("до 5 000", "q2_lt5"), ("5 000 - 20 000", "q2_5_20"), ("20 000 - 50 000", "q2_20_50"), ("более 50 000", "q2_50p")]),
-        ("Клиентов в месяц", [("менее 10", "q3_lt10"), ("10-50", "q3_10_50"), ("50-200", "q3_50_200"), ("более 200", "q3_200p")]),
-        ("Цель на 2026", [("300 000 ₽/мес", "q4_300"), ("500 000 ₽/мес", "q4_500"), ("1 000 000 ₽/мес", "q4_1m"), ("Масштабирование", "q4_scale")]),
-        ("Уже есть автоворонка?", [("Да", "q5_yes"), ("Нет", "q5_no"), ("В разработке", "q5_progress")])
+def get_main_menu_keyboard():
+    return [
+        [{"type": "callback", "text": "📊 Получить маркетинговый план", "payload": CALLBACK_AUDIT}],
+        [{"type": "callback", "text": "💬 Задать вопрос AI (круглосуточно)", "payload": CALLBACK_ASK_AI}],
+        [{"type": "callback", "text": "🏆 Челлендж «Первые деньги за 14 дней»", "payload": CALLBACK_CHALLENGE_TASK}],
+        [{"type": "callback", "text": "🎯 Записаться на консультацию", "payload": CALLBACK_BOOK_CONSULT}],
+        [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}]
     ]
-    text, options = questions[step]
-    builder = InlineKeyboardBuilder()
-    for label, data in options:
-        builder.button(text=label, callback_data=data)
-    builder.button(text="🆘 Помощь", url=HELP_URL)
-    builder.adjust(1)
-    return text, builder.as_markup()
 
 def get_after_plan_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="💬 Задать вопрос AI", callback_data="ai_chat")
-    builder.button(text="🏆 Начать челлендж", callback_data="challenge_start")
-    builder.button(text="🎯 Консультация", url=CONSULT_LINK)
-    builder.button(text="🔄 Пройти анкету заново", callback_data="survey")
-    builder.button(text="🆘 Помощь", url=HELP_URL)
-    builder.adjust(1)
-    return builder.as_markup()
+    return [
+        [{"type": "callback", "text": "💬 Задать вопрос AI", "payload": CALLBACK_ASK_AI}],
+        [{"type": "callback", "text": "🏆 Старт челленджа", "payload": CALLBACK_CHALLENGE_TASK}],
+        [{"type": "callback", "text": "🎯 Консультация", "payload": CALLBACK_BOOK_CONSULT}],
+        [{"type": "callback", "text": "🔄 Пройти анкету заново", "payload": CALLBACK_AUDIT}],
+        [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}]
+    ]
+
+def get_survey_keyboard(step: int):
+    if step >= len(SURVEY_QUESTIONS):
+        return None
+    q = SURVEY_QUESTIONS[step]
+    kb = [[{"type": "callback", "text": label, "payload": p}] for p, label in q["options"]]
+    kb.append([{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}])
+    return kb
 
 def get_challenge_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="📋 Получить задание", callback_data="challenge_task")
-    builder.button(text="✅ Выполнил задание", callback_data="challenge_done")
-    builder.button(text="📊 Мой прогресс", callback_data="challenge_progress")
-    builder.button(text="🎯 Консультация", url=CONSULT_LINK)
-    builder.button(text="🆘 Помощь", url=HELP_URL)
-    builder.button(text="🏠 Главное меню", callback_data="menu")
-    builder.adjust(1)
-    return builder.as_markup()
+    return [
+        [{"type": "callback", "text": "📋 Задание на сегодня", "payload": CALLBACK_CHALLENGE_TASK}],
+        [{"type": "callback", "text": "✅ Выполнил задание", "payload": CALLBACK_CHALLENGE_DONE}],
+        [{"type": "callback", "text": "📊 Мой прогресс", "payload": CALLBACK_CHALLENGE_PROGRESS}],
+        [{"type": "callback", "text": "🎯 Записаться к продюсеру", "payload": CALLBACK_BOOK_CONSULT}],
+        [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}],
+        [{"type": "callback", "text": "🏠 Главное меню", "payload": CALLBACK_MENU}]
+    ]
 
 def get_ai_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🏆 Челлендж", callback_data="challenge")
-    builder.button(text="🎯 Консультация", url=CONSULT_LINK)
-    builder.button(text="🏠 Меню", callback_data="menu")
-    builder.adjust(1)
-    return builder.as_markup()
+    return [
+        [{"type": "callback", "text": "🏆 Челлендж", "payload": CALLBACK_CHALLENGE_TASK}],
+        [{"type": "callback", "text": "🎯 Консультация", "payload": CALLBACK_BOOK_CONSULT}],
+        [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}],
+        [{"type": "callback", "text": "🏠 Меню", "payload": CALLBACK_MENU}]
+    ]
 
 def get_implementation_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🎯 Записаться на консультацию", url=CONSULT_LINK)
-    builder.button(text="🏠 Меню", callback_data="menu")
-    builder.adjust(1)
-    return builder.as_markup()
+    return [
+        [{"type": "callback", "text": "🎯 Записаться", "payload": CALLBACK_BOOK_CONSULT}],
+        [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}],
+        [{"type": "callback", "text": "🏠 Меню", "payload": CALLBACK_MENU}]
+    ]
+
+def get_feedback_keyboard():
+    return [
+        [{"type": "callback", "text": "👍 Полезно", "payload": CALLBACK_FEEDBACK_YES}],
+        [{"type": "callback", "text": "👎 Не помогло", "payload": CALLBACK_FEEDBACK_NO}]
+    ]
+
+def get_start_keyboard():
+    return [
+        [{"type": "callback", "text": "✅ Да, хочу маркетинговый план за 2 минуты", "payload": CALLBACK_START_SURVEY}],
+        [{"type": "link", "text": "🎯 Записаться на консультацию", "url": CONSULT_LINK}],
+        [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}]
+    ]
+
+CONSULTATION_TEXT = """🎯 Консультация с Вероникой Макаревич
+
+Что вы получите за 30 минут:
+- Чёткий план первой продажи
+- Ответ, на каком этапе воронки теряете деньги
+- Честный разбор ошибок
+
+Как записаться:
+1. Перейдите по ссылке ниже
+2. Напишите в личные сообщения:
+   - Удобное время для звонка
+   - Ваш запрос / проблему
+
+👇 Нажмите на кнопку, чтобы перейти в диалог"""
 
 WELCOME_TEXT = """🔥 Привет, предприниматель! Я Вероника Макаревич — продюсер, который знает, как превратить хаос в прибыль.
 
-Многие эксперты тонут в задачах, а денег нет. Знакомо?
+Многие эксперты тонут в бесконечных задачах: контент, воронка, реклама, клиенты… А денег нет. 
+Знакомо? Тогда ты по адресу.
 
 ⚡️ Что я тебе даю:
 
-📊 Маркетинговый план — не теория, а дорожная карта.
-💬 AI-чат 24/7 — отвечаю на вопросы по плану.
-🏆 Челлендж 14 дней — шаг за шагом к деньгам.
-🎯 Консультация со мной — разберём твой случай.
+📊 Маркетинговый план — не теория, а конкретная дорожная карта «бери и делай». За 5 вопросов AI разложит твой бизнес по полочкам и покажет, где ты теряешь деньги.
 
-Зачем тебе план? Большинство экспертов продают впустую, потому что нет системы.
+💬 AI-чат 24/7 — задавай любые вопросы по плану. Без вот этих «подожди, я отвечу завтра».
+
+🏆 Челлендж 14 дней — получай одно чёткое задание в день, шаг за шагом иди к первым деньгам.
+
+🎯 Консультация со мной — разберём твой случай, найду узкое место и скажу, как его пробить.
+
+Зачем тебе маркетинговый план? 
+Большинство экспертов продают впустую: постят, снимают рилс, но клиент не идёт. Потому что нет системы. План — это компас. Он показывает, где прячутся твои деньги.
 
 Поехали? 👇"""
 
 # === ОБРАБОТЧИКИ ===
-bot = Bot(MAX_BOT_TOKEN)
-dp = Dispatcher(bot)
-
-@dp.bot_started()
-async def on_bot_started(event: BotStarted):
-    logger.info(f"Bot started for user {event.user_id}")
-    await event.bot.send_message(event.chat_id, WELCOME_TEXT, reply_markup=get_start_keyboard())
-
-@dp.message_created(Command('start'))
-async def on_start(event: MessageCreated):
-    logger.info(f"Command /start from {event.user_id}")
-    await event.message.answer(WELCOME_TEXT, reply_markup=get_start_keyboard())
-
-@dp.callback_query(lambda c: c.data == "start_survey")
-async def start_survey(event: CallbackQuery):
-    await event.answer()
-    state, _ = get_user_state(event.user_id)
-    if state not in ("menu", "survey"):
-        await event.message.answer("Вы уже в процессе анкеты. Пожалуйста, ответьте на текущий вопрос или нажмите /start для сброса.")
-        return
-    save_user_state(event.user_id, "awaiting_business_name", {})
-    await event.message.answer("Введите название вашего проекта:")
-
-@dp.message_created()
-async def handle_message(event: MessageCreated):
-    user_id = event.user_id
-    text = event.message.text.strip()
+async def process_message(user_id: str, text: str):
     state, data = get_user_state(user_id)
 
-    if state == "awaiting_business_name":
-        if len(text) > 100:
-            await event.message.answer("Название слишком длинное, сократите (до 100 символов):")
-            return
-        save_user_state(user_id, "awaiting_business_description", {"business_name": text})
-        await event.message.answer("Отлично! Теперь опишите бизнес (что делаете, кому помогаете, уникальность), до 500 символов:")
+    if not text or text.strip() == "":
+        text = "/start"
+
+    if text == "/stats" and user_id == os.getenv("PRODUCER_USER_ID", "24585087"):
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute("SELECT id, user_id, query_type, substr(prompt,1,80), created_at FROM deepseek_queries ORDER BY id DESC LIMIT 30").fetchall()
+        conn.close()
+        if rows:
+            msg = "📊 Последние запросы:\n" + "\n".join([f"{r[0]}. {r[1]} | {r[2]} | {r[3]}... | {r[4]}" for r in rows])
+            await send_message(user_id, msg[:3900], None)
+        else:
+            await send_message(user_id, "Нет запросов.", None)
         return
 
-    if state == "awaiting_business_description":
+    if text == "/start":
+        save_user_state(user_id, STATE_MENU, {})
+        await send_message(user_id, WELCOME_TEXT, get_start_keyboard())
+        return
+
+    if state == STATE_AWAITING_BUSINESS_NAME:
+        if len(text) > 100:
+            await send_message(user_id, "Название слишком длинное, сократите (до 100 символов):")
+            return
+        save_user_state(user_id, STATE_AWAITING_BUSINESS_DESCRIPTION, {"business_name": text})
+        await send_message(user_id, "Отлично! Теперь опишите бизнес: что вы делаете, кому помогаете, какая ваша уникальность? (макс 500 символов)")
+        return
+
+    if state == STATE_AWAITING_BUSINESS_DESCRIPTION:
         if len(text) > 500:
-            await event.message.answer("Сократите описание до 500 символов:")
+            await send_message(user_id, "Сократите описание до 500 символов:")
             return
         name = data.get("business_name")
         save_business_data(user_id, name, text)
-        save_user_state(user_id, "survey", {"answers": {}, "step": 0})
-        q_text, kb = get_survey_keyboard(0)
-        await event.message.answer(q_text, reply_markup=kb)
+        save_user_state(user_id, STATE_SURVEY, {"answers": {}, "survey_step": 0})
+        await send_message(user_id, "📋 Короткая анкета из 5 вопросов. Это поможет AI точнее подобрать план.\n\n" + SURVEY_QUESTIONS[0]["text"], get_survey_keyboard(0))
         return
 
-    if state == "ai_chat":
-        report = get_report(user_id)
+    if state == STATE_AI_CHAT:
+        report = get_report(user_id, "premium")
         if not report or report["status"] != "ready":
-            await event.message.answer("Сначала пройдите анкету и получите план.", reply_markup=get_start_keyboard())
-            save_user_state(user_id, "menu", {})
+            await send_message(user_id, "Сначала пройдите анкету и получите план.", [[{"type": "callback", "text": "📊 Получить план", "payload": CALLBACK_AUDIT}]])
+            save_user_state(user_id, STATE_MENU, {})
             return
         save_chat_message(user_id, "user", text)
         if any(kw in text.lower() for kw in ["настрой", "сделай", "воронку", "таргет", "внедрение", "яндекс директ"]):
-            answer = "🔥 Это задача для профессионального внедрения. Запишитесь на консультацию по кнопке ниже."
-            await event.message.answer(answer, reply_markup=get_implementation_keyboard())
+            ans = "🔥 Это задача для профессионального внедрения. Если хотите, чтобы я лично настроил вам воронку или рекламу — запишитесь на консультацию через кнопку в меню «🎯 Записаться». Я свяжусь с вами."
+            await send_message(user_id, ans, get_implementation_keyboard())
         else:
-            await event.message.answer("🤔 Думаю...")
-            history = get_chat_history(user_id, 10)
-            answer = await call_deepseek_chat(text, report["text"], history)
-            answer += "\n\n📌 *Листай вверх к началу плана*"
-            await event.message.answer(answer, reply_markup=get_ai_keyboard())
-        save_chat_message(user_id, "assistant", answer)
+            await send_message(user_id, "🤔 Думаю...", None)
+            hist = get_chat_history(user_id, 10)
+            ans = await call_deepseek_chat(text, user_id, report["text"], hist)
+            ans += "\n\n📌 *Листай вверх к началу плана, если нужны детали*"
+            await send_message(user_id, ans, get_ai_keyboard())
+        save_chat_message(user_id, "assistant", ans)
         return
 
-    if state == "implementation":
-        # Заявка на внедрение – просто сохраняем в лог, но можно и продюсеру уведомление
+    if state == STATE_AWAITING_IMPLEMENTATION:
         logger.info(f"Implementation request from {user_id}: {text}")
-        await event.message.answer("✅ Заявка принята! Продюсер свяжется с вами.", reply_markup=get_main_keyboard())
-        save_user_state(user_id, "menu", {})
+        await send_message(user_id, "✅ Заявка принята! Продюсер свяжется с вами. А пока можете задать вопрос AI или пройти челлендж.", get_main_menu_keyboard())
+        save_user_state(user_id, STATE_MENU, {})
         return
 
-    if state == "feedback_reason":
-        # Сохраняем отрицательный отзыв
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("INSERT INTO feedback (user_id, rating, reason) VALUES (?, 0, ?)", (user_id, text))
-        conn.commit()
-        conn.close()
-        await event.message.answer("Спасибо за честность! Учту это.\n\nПопробуете пройти анкету заново?", reply_markup=get_start_keyboard())
-        save_user_state(user_id, "menu", {})
+    if state == STATE_AWAITING_FEEDBACK_REASON:
+        save_feedback(user_id, 0, text)
+        await send_message(user_id, "Спасибо за честность! Я учту это.\n\nПопробуете пройти анкету заново или записаться на консультацию?", get_start_keyboard())
+        save_user_state(user_id, STATE_MENU, {})
         return
 
-    # Если состояние не распознано, сбрасываем в меню
-    save_user_state(user_id, "menu", {})
-    await event.message.answer("Выберите действие:", reply_markup=get_start_keyboard())
+    save_user_state(user_id, STATE_MENU, {})
+    await send_message(user_id, "Выберите действие:", get_start_keyboard())
 
-@dp.callback_query()
-async def handle_callback(event: CallbackQuery):
-    user_id = event.user_id
-    data = event.data
-    logger.info(f"Callback from {user_id}: {data}")
+async def process_callback(chat_id: str, callback_id: str, callback_data: str):
+    logger.info(f"Callback: user={chat_id}, data={callback_data}")
+    state, _ = get_user_state(chat_id)
 
-    if data == "menu":
-        save_user_state(user_id, "menu", {})
-        await event.message.edit_text("🏠 Главное меню", reply_markup=get_main_keyboard())
-        await event.answer()
+    if not callback_data or callback_data in ("start", "get_started", "START", "null", "None", ""):
+        save_user_state(chat_id, STATE_MENU, {})
+        await send_callback_answer(callback_id, WELCOME_TEXT, get_start_keyboard())
         return
 
-    # Обработка опросника
-    survey_prefixes = ("q1_", "q2_", "q3_", "q4_", "q5_")
-    if data.startswith(survey_prefixes):
-        state, ud = get_user_state(user_id)
-        if state != "survey":
-            await event.answer("Анкета не активна. Начните сначала.", show_alert=True)
+    # ========== НОВЫЙ ОБРАБОТЧИК ДЛЯ КНОПКИ "ДА, ХОЧУ ПЛАН" ==========
+    if callback_data == CALLBACK_START_SURVEY or callback_data == "start_survey":
+        save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {})
+        await send_callback_answer(callback_id, "Введите название вашего проекта:", None)
+        return
+
+    if callback_data == CALLBACK_MENU:
+        save_user_state(chat_id, STATE_MENU, {})
+        await send_callback_answer(callback_id, "🏠 Главное меню", get_main_menu_keyboard())
+        return
+
+    if callback_data == CALLBACK_BOOK_CONSULT:
+        await send_callback_answer(callback_id, CONSULTATION_TEXT, [[{"type": "link", "text": "✍️ Перейти к записи", "url": CONSULT_LINK}], [{"type": "callback", "text": "🏠 Меню", "payload": CALLBACK_MENU}]])
+        return
+
+    if callback_data == CALLBACK_START_SURVEY or callback_data == "start_survey":
+        save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {})
+        await send_callback_answer(callback_id, "Введите название вашего проекта:", None)
+        return
+
+    if callback_data == CALLBACK_RESET:
+        save_user_state(chat_id, STATE_MENU, {})
+        await send_callback_answer(callback_id, "Начнём сначала.", get_start_keyboard())
+        return
+
+    if callback_data == CALLBACK_AUDIT:
+        if state in (STATE_SURVEY, STATE_AWAITING_BUSINESS_NAME, STATE_AWAITING_BUSINESS_DESCRIPTION):
+            await send_callback_answer(callback_id, "Вы уже в процессе анкеты. Если хотите начать заново — нажмите сброс.", [[{"type": "callback", "text": "🔄 Сбросить", "payload": CALLBACK_RESET}]])
             return
-        step = ud.get("step", 0)
-        answers = ud.get("answers", {})
-        # Сохраняем ответ
-        answers[data] = data
-        ud["answers"] = answers
-        step += 1
-        ud["step"] = step
-        save_user_state(user_id, "survey", ud)
-        if step < 5:
-            q_text, kb = get_survey_keyboard(step)
-            await event.message.edit_text(q_text, reply_markup=kb)
-            await event.answer()
-        else:
-            # Анкета завершена
-            save_form(user_id, answers)
-            biz = get_business_data(user_id)
-            if not biz:
-                await event.message.edit_text("Ошибка данных. Начните заново.", reply_markup=get_start_keyboard())
-                save_user_state(user_id, "menu", {})
-                await event.answer()
-                return
-            # Проверяем, есть ли уже готовый отчёт
-            report = get_report(user_id)
-            if report and report["status"] == "ready":
-                report_text = report["text"]
-                await event.message.edit_text("✅ Ваш план уже готов! Отправляю...")
-                await event.message.answer(report_text[:3900])
-                if len(report_text) > 3900:
-                    await event.message.answer(report_text[3900:])
-                await event.message.answer("Что дальше?", reply_markup=get_after_plan_keyboard())
-                await event.answer()
-                return
-            # Генерируем новый план
-            await event.message.edit_text("🔍 Запускаю анализ...\n\nПожалуйста, подождите 1-2 минуты.")
-            report_text = await call_deepseek_marketing_plan(biz["name"], biz["description"], answers)
-            if not report_text:
-                await event.message.edit_text("❌ Не удалось сгенерировать план. Попробуйте позже.", reply_markup=get_start_keyboard())
-                save_user_state(user_id, "menu", {})
-                await event.answer()
-                return
-            save_report(user_id, report_text)
-            final_text = report_text + "\n\n📜 *Листай вверх к началу плана*"
-            # Отправляем длинный текст частями
-            await event.message.edit_text("✅ ВАШ МАРКЕТИНГОВЫЙ ПЛАН ГОТОВ!")
-            for part in [final_text[i:i+3900] for i in range(0, len(final_text), 3900)]:
-                await event.message.answer(part)
-            await event.message.answer("Было полезно? Поделитесь мнением:", reply_markup=get_feedback_keyboard())
-            await event.answer()
+        save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {})
+        await send_callback_answer(callback_id, "Введите название вашего проекта:", None)
         return
 
-    # Остальные callback-обработчики (для краткости опущены, но их можно добавить по аналогии)
-    # Например: ai_chat, challenge, challenge_start, challenge_task, challenge_done, challenge_progress, feedback_yes/no
-    # Здесь мы реализуем основные, остальные можно добавить позже
-
-    if data == "ai_chat":
-        report = get_report(user_id)
+    if callback_data == CALLBACK_ASK_AI:
+        report = get_report(chat_id, "premium")
         if not report or report["status"] != "ready":
-            await event.answer("Сначала пройдите анкету и получите план.", show_alert=True)
+            await send_callback_answer(callback_id, "Сначала получите план.", [[{"type": "callback", "text": "📊 Получить план", "payload": CALLBACK_AUDIT}]])
             return
-        save_user_state(user_id, "ai_chat", {})
-        await event.message.edit_text("💬 Задавайте вопросы по вашему плану. Я на связи 24/7.", reply_markup=get_ai_keyboard())
-        await event.answer()
+        save_user_state(chat_id, STATE_AI_CHAT, {})
+        await send_callback_answer(callback_id, "💬 Задавайте вопросы по вашему плану. Я на связи 24/7.", None)
         return
 
-    if data == "challenge":
-        report = get_report(user_id)
+    if callback_data == CALLBACK_FEEDBACK_YES:
+        save_feedback(chat_id, 1)
+        await send_callback_answer(callback_id, "Отлично! Рад, что помогло. Что дальше?", get_after_plan_keyboard())
+        return
+
+    if callback_data == CALLBACK_FEEDBACK_NO:
+        await send_callback_answer(callback_id, "Напишите кратко, чего не хватило (2-3 слова):", None)
+        save_user_state(chat_id, STATE_AWAITING_FEEDBACK_REASON, {})
+        return
+
+    if callback_data == CALLBACK_IMPLEMENTATION:
+        save_user_state(chat_id, STATE_AWAITING_IMPLEMENTATION, {})
+        await send_callback_answer(callback_id, "Опишите, что именно нужно внедрить (воронка, реклама, скрипты):", None)
+        return
+
+    if callback_data == CALLBACK_CHALLENGE_TASK:
+        report = get_report(chat_id, "premium")
         if not report or report["status"] != "ready":
-            await event.answer("Сначала получите план.", show_alert=True)
+            await send_callback_answer(callback_id, "Сначала получите план.", [[{"type": "callback", "text": "📊 Получить план", "payload": CALLBACK_AUDIT}]])
             return
-        chall = get_active_challenge(user_id)
+        chall = get_active_challenge(chat_id)
         if not chall:
-            await event.message.edit_text("🏆 Челлендж ещё не начат. Нажмите «Начать челлендж».", reply_markup=get_challenge_keyboard())
+            cid = start_new_challenge(chat_id)
+            task = await generate_challenge_task(chat_id, 1, report["text"])
+            save_challenge_task(cid, 1, task)
+            await send_callback_answer(callback_id, f"🏆 Челлендж начался!\n\n{task}", get_challenge_keyboard())
         else:
-            # Показываем текущий прогресс
-            await event.message.edit_text(f"Прогресс: день {chall['current_day']} из 14, выполнено {chall['tasks_completed']} заданий.", reply_markup=get_challenge_keyboard())
-        await event.answer()
+            cur = get_current_task(chall["id"], chall["current_day"])
+            if cur and not cur["is_completed"]:
+                await send_callback_answer(callback_id, f"📋 Задание дня {chall['current_day']}:\n\n{cur['task_text']}", get_challenge_keyboard())
+            else:
+                await send_callback_answer(callback_id, f"Прогресс: день {chall['current_day']} из 14, выполнено {chall['tasks_completed']}", get_challenge_keyboard())
         return
 
-    if data == "challenge_start":
-        report = get_report(user_id)
-        if not report or report["status"] != "ready":
-            await event.answer("Сначала получите план.", show_alert=True)
-            return
-        chall = get_active_challenge(user_id)
+    if callback_data == CALLBACK_CHALLENGE_DONE:
+        chall = get_active_challenge(chat_id)
         if not chall:
-            cid = start_new_challenge(user_id)
-            task_text = await generate_challenge_task(user_id, 1, report["text"])
-            save_challenge_task(cid, 1, task_text)
-            await event.message.edit_text(f"🏆 Челлендж начался!\n\n{task_text}", reply_markup=get_challenge_keyboard())
-        else:
-            await event.answer("Челлендж уже активен.", show_alert=True)
-        return
-
-    if data == "challenge_task":
-        chall = get_active_challenge(user_id)
-        if not chall:
-            await event.answer("Челлендж не активен. Начните его сначала.", show_alert=True)
-            return
-        cur = get_current_task(chall["id"], chall["current_day"])
-        if cur:
-            await event.message.edit_text(f"📋 Задание дня {chall['current_day']}:\n\n{cur['task_text']}", reply_markup=get_challenge_keyboard())
-        else:
-            await event.message.edit_text("Задание не найдено.", reply_markup=get_challenge_keyboard())
-        await event.answer()
-        return
-
-    if data == "challenge_done":
-        chall = get_active_challenge(user_id)
-        if not chall:
-            await event.answer("Челлендж не активен.", show_alert=True)
+            await send_callback_answer(callback_id, "Нет активного челленджа.", get_main_menu_keyboard())
             return
         cur = get_current_task(chall["id"], chall["current_day"])
         if not cur or cur["is_completed"]:
-            await event.answer("Задание уже выполнено или не найдено.", show_alert=True)
+            await send_callback_answer(callback_id, "Задание уже выполнено.", get_challenge_keyboard())
             return
         mark_task_completed(chall["id"], chall["current_day"])
         if chall["current_day"] >= 14:
             complete_challenge(chall["id"])
-            await event.message.edit_text("🎉 ПОЗДРАВЛЯЮ! Вы прошли 14-дневный челлендж!", reply_markup=get_after_plan_keyboard())
+            await send_callback_answer(callback_id, "🎉 Поздравляю! Челлендж пройден!", get_after_plan_keyboard())
         else:
             new_day = chall["current_day"] + 1
             advance_challenge_day(chall["id"], new_day)
-            report = get_report(user_id)
-            new_task = await generate_challenge_task(user_id, new_day, report["text"])
+            report = get_report(chat_id, "premium")
+            new_task = await generate_challenge_task(chat_id, new_day, report["text"])
             save_challenge_task(chall["id"], new_day, new_task)
-            await event.message.edit_text(f"✅ Задание дня {chall['current_day']} выполнено!\n\nЗадание дня {new_day}:\n{new_task}", reply_markup=get_challenge_keyboard())
-        await event.answer()
+            await send_callback_answer(callback_id, f"✅ Задание дня {chall['current_day']} выполнено!\n\nЗадание дня {new_day}:\n{new_task}", get_challenge_keyboard())
         return
 
-    if data == "challenge_progress":
-        chall = get_active_challenge(user_id)
+    if callback_data == CALLBACK_CHALLENGE_PROGRESS:
+        chall = get_active_challenge(chat_id)
         if not chall:
-            await event.answer("Челлендж не активен.", show_alert=True)
+            await send_callback_answer(callback_id, "Нет активного челленджа.", get_main_menu_keyboard())
             return
-        await event.message.edit_text(f"Прогресс: день {chall['current_day']} из 14, выполнено {chall['tasks_completed']} заданий.", reply_markup=get_challenge_keyboard())
-        await event.answer()
+        await send_callback_answer(callback_id, f"Прогресс: день {chall['current_day']} из 14, выполнено {chall['tasks_completed']}", get_challenge_keyboard())
         return
 
-    if data == "feedback_yes":
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("INSERT INTO feedback (user_id, rating) VALUES (?, 1)", (user_id,))
-        conn.commit()
-        conn.close()
-        await event.message.edit_text("Отлично! Рад, что помогло. Что дальше?", reply_markup=get_after_plan_keyboard())
-        await event.answer()
+    if callback_data in [Q1_SERVICE, Q1_INFO, Q1_CONSULT, Q1_NONE, Q2_LT5, Q2_5_20, Q2_20_50, Q2_50P,
+                         Q3_LT10, Q3_10_50, Q3_50_200, Q3_200P, Q4_300, Q4_500, Q4_1M, Q4_SCALE,
+                         Q5_YES, Q5_NO, Q5_PROGRESS]:
+        _, ud = get_user_state(chat_id)
+        if ud is None: ud = {}
+        ud.setdefault("answers", {})
+        ud.setdefault("survey_step", 0)
+        step = ud["survey_step"]
+        if step < len(SURVEY_QUESTIONS):
+            key = SURVEY_QUESTIONS[step]["key"]
+            ud["answers"][key] = callback_data
+            ud["survey_step"] = step + 1
+            save_user_state(chat_id, STATE_SURVEY, ud)
+            if step + 1 < len(SURVEY_QUESTIONS):
+                await send_callback_answer(callback_id, SURVEY_QUESTIONS[step+1]["text"], get_survey_keyboard(step+1))
+            else:
+                save_form(chat_id, ud["answers"])
+                biz = get_business_data(chat_id)
+                if not biz:
+                    await send_callback_answer(callback_id, "Ошибка, начните заново.", get_start_keyboard())
+                    return
+                existing = get_report(chat_id, "premium")
+                if existing and existing["status"] == "ready":
+                    report_text = existing["text"]
+                elif existing and existing["status"] == "generating":
+                    await send_callback_answer(callback_id, "План уже генерируется, подождите...", None)
+                    return
+                else:
+                    save_report(chat_id, "premium", "")
+                    await send_callback_answer(callback_id, "🔍 Запускаю анализ...", None)
+                    await send_animation(chat_id)
+                    report_text = await call_deepseek_marketing_plan(biz["name"], biz["description"], ud["answers"], chat_id)
+                    if not report_text:
+                        await send_message(chat_id, "❌ Не удалось сгенерировать план. Попробуйте позже.", get_main_menu_keyboard())
+                        update_report_status(chat_id, "failed")
+                        return
+                    save_report(chat_id, "premium", report_text)
+                final = report_text + "\n\n📜 *Листай вверх к началу плана*"
+                await send_long_message(chat_id, "✅ ВАШ МАРКЕТИНГОВЫЙ ПЛАН ГОТОВ!\n\n" + final, None)
+                await asyncio.sleep(2)
+                await send_message(chat_id, "Было полезно? Поделитесь мнением.", get_feedback_keyboard())
         return
 
-    if data == "feedback_no":
-        save_user_state(user_id, "feedback_reason", {})
-        await event.message.edit_text("Напишите кратко, чего не хватило (2-3 слова):")
-        await event.answer()
-        return
+    await send_callback_answer(callback_id, "Выберите действие:", get_start_keyboard())
 
-    if data == "survey":
-        # Повторная анкета – сбрасываем состояние
-        save_user_state(user_id, "menu", {})
-        await start_survey(event)
-        return
-
-    await event.answer("Неизвестная команда.")
-
-def get_feedback_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="👍 Полезно", callback_data="feedback_yes")
-    builder.button(text="👎 Не помогло", callback_data="feedback_no")
-    builder.adjust(2)
-    return builder.as_markup()
+# === НАПОМИНАНИЯ ===
+async def reminders_task():
+    while True:
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            rows = conn.execute("""
+                SELECT b.user_id, r.ready_at, b.reminder_sent_24h, b.reminder_sent_7d
+                FROM business_data b
+                JOIN reports r ON b.user_id = r.user_id AND r.report_type = 'premium' AND r.status = 'ready'
+                WHERE b.reminder_sent_24h = 0 OR b.reminder_sent_7d = 0
+            """).fetchall()
+            for user_id, ready_at, sent24, sent7 in rows:
+                delta = get_moscow_time() - datetime.fromisoformat(ready_at)
+                if not sent24 and delta >= timedelta(hours=24):
+                    await send_message(user_id, "📌 Напоминаю: твой маркетинговый план ждёт внедрения. Выбери один пункт и сделай сегодня. Если застрял — задай вопрос AI или запишись на консультацию.", None)
+                    update_reminder_flags(user_id, reminder_24h=True)
+                    await asyncio.sleep(2)
+                if not sent7 and delta >= timedelta(days=7):
+                    await send_message(user_id, "🔥 7 дней! Большинство моих клиентов получают первые деньги через 2 недели. Продолжай выполнять задания челленджа. Если результат ещё не пришёл — самое время записаться на разбор со мной. Кнопка в меню.", None)
+                    update_reminder_flags(user_id, reminder_7d=True)
+                    await asyncio.sleep(2)
+            conn.close()
+        except Exception as e:
+            logger.error(f"Reminders error: {e}")
+        await asyncio.sleep(21600)
 
 # === FASTAPI ===
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(reminders_task())
+    yield
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    body = await request.json()
-    logger.info(f"Webhook body: {json.dumps(body, ensure_ascii=False)[:500]}")
-    await dp.handle_webhook(body)
-    return Response(status_code=200)
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot running", "version": "11.0"}
+    return {"status": "Salesplan bot running", "version": "10.14"}
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    try:
+        body = await request.body()
+        logger.info(f"RAW BODY: {body[:1000]}")
+        payload = await request.json()
+        logger.info(f"FULL PAYLOAD: {json.dumps(payload, ensure_ascii=False)[:1000]}")
+        if payload.get("update_type") == "bot_started" or payload.get("event") == "bot_started":
+            user_id = payload.get("user", {}).get("user_id") or payload.get("sender", {}).get("user_id")
+            if user_id:
+                await send_message(str(user_id), WELCOME_TEXT, get_start_keyboard())
+            return Response(status_code=200)
+        if "message" in payload and "callback" not in payload:
+            msg = payload["message"]
+            user_id = msg.get("sender", {}).get("user_id")
+            text = msg.get("body", {}).get("text")
+            if user_id and text is not None:
+                await process_message(str(user_id), text.strip())
+            elif user_id:
+                await process_message(str(user_id), "/start")
+        elif "callback" in payload:
+            cb = payload["callback"]
+            user_id = cb.get("user", {}).get("user_id")
+            callback_id = cb.get("callback_id")
+            data = cb.get("payload")
+            if user_id:
+                await process_callback(str(user_id), str(callback_id), str(data) if data else "")
+        return Response(status_code=200)
+    except Exception as e:
+        logger.error(f"Webhook error: {traceback.format_exc()}")
+        return Response(status_code=200)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8001))
