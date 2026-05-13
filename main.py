@@ -755,16 +755,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ВРЕМЕННЫЙ ЭНДПОИНТ ДЛЯ ПОДПИСКИ НА CALLBACK_QUERY (УДАЛИТЬ ПОСЛЕ)
 @app.get("/subscribe_me")
 async def subscribe_to_bot_events():
     import requests
     token = MAX_BOT_TOKEN
     url = "https://platform-api.max.ru/subscriptions"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    headers = {"Authorization": token, "Content-Type": "application/json"}  # Без Bearer!
     payload = {
         "url": "https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/webhook",
-        "update_types": ["message_created", "bot_started", "callback_query"]
+        "update_types": ["message_created", "bot_started", "callback_query"]  # Добавили callback_query
     }
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=30)
