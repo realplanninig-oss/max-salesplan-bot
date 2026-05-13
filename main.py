@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan (версия 10.10: гарантированная обработка кнопки «Начать»)
+# File: main.py — бот Salesplan (версия 10.11: полная обработка всех типов событий, включая bot_started)
 
 import asyncio
 import logging
@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = "salesplan_bot.db"
 
+# === СОСТОЯНИЯ ===
 STATE_MENU = "menu"
 STATE_AWAITING_BUSINESS_NAME = "awaiting_business_name"
 STATE_AWAITING_BUSINESS_DESCRIPTION = "awaiting_business_description"
@@ -302,7 +303,7 @@ async def send_animation(user_id: str):
         await send_message(user_id, step, None)
         await asyncio.sleep(2)
 
-# === DEEPSEEK API (сокращённо, без изменений) ===
+# === DEEPSEEK API ===
 async def call_deepseek_marketing_plan(name: str, description: str, answers: dict, user_id: str = None) -> str:
     if not DEEPSEEK_API_KEY:
         return None
@@ -501,7 +502,6 @@ WELCOME_TEXT = """🔥 Привет, предприниматель! Я Веро
 # === ОБРАБОТЧИКИ ===
 async def process_message(user_id: str, text: str):
     state, data = get_user_state(user_id)
-    logger.info(f"Processing message from {user_id}: '{text}' state={state}")
 
     # Если нет текста или команда start – показываем меню
     if not text or text.strip() == "":
@@ -577,12 +577,11 @@ async def process_message(user_id: str, text: str):
     await send_message(user_id, "Выберите действие:", get_start_keyboard())
 
 async def process_callback(chat_id: str, callback_id: str, callback_data: str):
-    logger.info(f"Processing callback from {chat_id}: callback_id={callback_id}, data={callback_data}")
+    logger.info(f"Callback received: user={chat_id}, callback_id={callback_id}, data={callback_data}")
     state, _ = get_user_state(chat_id)
 
-    # НАДЁЖНАЯ ОБРАБОТКА СИСТЕМНОЙ КНОПКИ "НАЧАТЬ"
-    # Если callback_data пустое, None, 'start', 'get_started' или любое другое значение – показываем меню
-    if not callback_data or callback_data in ("start", "get_started", "START", "start_survey"):
+    # Если callback_data пустое или системное – показываем меню
+    if not callback_data or callback_data in ("start", "get_started", "START", "start_survey", "None", "null", ""):
         save_user_state(chat_id, STATE_MENU, {})
         await send_callback_answer(callback_id, WELCOME_TEXT, get_start_keyboard())
         return
@@ -771,7 +770,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot running", "version": "10.10"}
+    return {"status": "Salesplan bot running", "version": "10.11"}
 
 @app.get("/health")
 async def health():
@@ -780,8 +779,20 @@ async def health():
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
+        # Логируем всё, что приходит
+        body = await request.body()
+        logger.info(f"RAW BODY: {body[:1000]}")
         payload = await request.json()
-        logger.info(f"Webhook payload: {json.dumps(payload, ensure_ascii=False)[:500]}")
+        logger.info(f"FULL PAYLOAD: {json.dumps(payload, ensure_ascii=False)[:1000]}")
+
+        # Проверяем специальное событие bot_started
+        if payload.get("update_type") == "bot_started" or payload.get("event") == "bot_started":
+            user_id = payload.get("user", {}).get("user_id") or payload.get("sender", {}).get("user_id")
+            if user_id:
+                logger.info(f"Bot started event for user {user_id}")
+                await send_message(str(user_id), WELCOME_TEXT, get_start_keyboard())
+                return Response(status_code=200)
+
         if "message" in payload and "callback" not in payload:
             msg = payload["message"]
             user_id = msg.get("sender", {}).get("user_id")
@@ -789,18 +800,18 @@ async def webhook(request: Request):
             if user_id and text is not None:
                 await process_message(str(user_id), text.strip())
             elif user_id:
-                # Пустое сообщение – обрабатываем как /start
                 await process_message(str(user_id), "/start")
         elif "callback" in payload:
             cb = payload["callback"]
             user_id = cb.get("user", {}).get("user_id")
             callback_id = cb.get("callback_id")
             data = cb.get("payload")
-            if user_id and data is not None:
-                await process_callback(str(user_id), str(callback_id), str(data))
-            elif user_id:
-                # Пустой callback – обрабатываем как кнопку "Начать"
-                await process_callback(str(user_id), str(callback_id), "start")
+            if user_id:
+                await process_callback(str(user_id), str(callback_id), str(data) if data else "")
+        else:
+            # Неизвестный тип события, но может быть просто пустой запрос – игнорируем
+            logger.info(f"Unknown event type: {payload.get('update_type')}")
+
         return Response(status_code=200)
     except Exception as e:
         logger.error(f"Webhook error: {traceback.format_exc()}")
