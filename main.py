@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan (версия 10.15: добавлено логирование callback и исправлена подписка)
+# File: main.py — бот Salesplan (версия 10.17: временный эндпоинт для подписки)
 
 import asyncio
 import logging
@@ -19,14 +19,13 @@ import uvicorn
 
 load_dotenv()
 
-# === КОНФИГУРАЦИЯ ===
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJp3NEa7OYZr1MKfUuC1hYDyKh2f4HFkfTXT88W3txWaBaFQmU")
 CONSULT_LINK = "https://max.ru/u/f9LHodD0cOJmqGaOJJxBthmX1NCjnOXHlsnYzYTc83uuDLwN4j08I-fmU4U"
 
 if not MAX_BOT_TOKEN:
-    raise RuntimeError("ERROR: MAX_BOT_TOKEN not found in .env")
+    raise RuntimeError("MAX_BOT_TOKEN not set in environment")
 
 LOGS_DIR = Path("./logs")
 LOGS_DIR.mkdir(exist_ok=True)
@@ -43,7 +42,6 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = "salesplan_bot.db"
 
-# === СОСТОЯНИЯ ===
 STATE_MENU = "menu"
 STATE_AWAITING_BUSINESS_NAME = "awaiting_business_name"
 STATE_AWAITING_BUSINESS_DESCRIPTION = "awaiting_business_description"
@@ -216,7 +214,9 @@ def get_active_challenge(user_id: str):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute("SELECT id, current_day, tasks_completed FROM challenges WHERE user_id = ? AND status = 'active' ORDER BY start_date DESC LIMIT 1", (user_id,)).fetchone()
     conn.close()
-    return {"id": row[0], "current_day": row[1], "tasks_completed": row[2]} if row else None
+    if row:
+        return {"id": row[0], "current_day": row[1], "tasks_completed": row[2]}
+    return None
 
 def start_new_challenge(user_id: str) -> int:
     conn = sqlite3.connect(DB_PATH)
@@ -234,7 +234,9 @@ def get_current_task(challenge_id: int, day: int):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute("SELECT id, task_text, is_completed FROM challenge_tasks WHERE challenge_id = ? AND day_number = ?", (challenge_id, day)).fetchone()
     conn.close()
-    return {"id": row[0], "task_text": row[1], "is_completed": bool(row[2])} if row else None
+    if row:
+        return {"id": row[0], "task_text": row[1], "is_completed": bool(row[2])}
+    return None
 
 def mark_task_completed(challenge_id: int, day: int):
     conn = sqlite3.connect(DB_PATH)
@@ -493,7 +495,6 @@ WELCOME_TEXT = """🔥 Привет, предприниматель! Я Веро
 
 Поехали? 👇"""
 
-# === ОБРАБОТЧИКИ ===
 async def process_message(user_id: str, text: str):
     state, data = get_user_state(user_id)
 
@@ -577,7 +578,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         await send_callback_answer(callback_id, WELCOME_TEXT, get_start_keyboard())
         return
 
-    # Обработчик кнопки "Да, хочу маркетинговый план"
     if callback_data == CALLBACK_START_SURVEY or callback_data == "start_survey":
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {})
         await send_callback_answer(callback_id, "Введите название вашего проекта:", None)
@@ -723,7 +723,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
 
     await send_callback_answer(callback_id, "Выберите действие:", get_start_keyboard())
 
-# === НАПОМИНАНИЯ ===
 async def reminders_task():
     while True:
         try:
@@ -749,7 +748,6 @@ async def reminders_task():
             logger.error(f"Reminders error: {e}")
         await asyncio.sleep(21600)
 
-# === FASTAPI ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(reminders_task())
@@ -757,13 +755,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Временный эндпоинт для настройки подписки (удалить после использования)
+# ВРЕМЕННЫЙ ЭНДПОИНТ ДЛЯ ПОДПИСКИ НА COOKIE_QUERY (УДАЛИТЬ ПОСЛЕ ИСПОЛЬЗОВАНИЯ)
 @app.get("/subscribe_me")
 async def subscribe_to_bot_events():
-    import requests
     token = MAX_BOT_TOKEN
     url = "https://platform-api.max.ru/subscriptions"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}  # добавлен Bearer
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
         "url": "https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/webhook",
         "update_types": ["message_created", "bot_started", "callback_query"]
@@ -780,7 +777,7 @@ async def subscribe_to_bot_events():
 
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot running", "version": "10.15"}
+    return {"status": "Salesplan bot running", "version": "10.17"}
 
 @app.get("/health")
 async def health():
