@@ -755,25 +755,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-@app.get("/subscribe_me")
-async def subscribe_to_bot_events():
-    import requests
-    token = MAX_BOT_TOKEN
-    url = "https://platform-api.max.ru/subscriptions"
-    headers = {"Authorization": token, "Content-Type": "application/json"}
-    payload = {
-        "url": "https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/webhook"
-    }
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        return {
-            "status": response.status_code,
-            "response": response.json() if response.text else None,
-            "text": response.text
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
 @app.get("/")
 async def root():
     return {"status": "Salesplan bot running", "version": "10.17"}
