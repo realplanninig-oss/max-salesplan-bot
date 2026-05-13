@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan (версия 10.9: запись на консультацию через ссылку на личку продюсера)
+# File: main.py — бот Salesplan (версия 10.10: гарантированная обработка кнопки «Начать»)
 
 import asyncio
 import logging
@@ -23,7 +23,6 @@ load_dotenv()
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJp3NEa7OYZr1MKfUuC1hYDyKh2f4HFkfTXT88W3txWaBaFQmU")
-# Прямая ссылка на личные сообщения продюсера
 CONSULT_LINK = "https://max.ru/u/f9LHodD0cOJmqGaOJJxBthmX1NCjnOXHlsnYzYTc83uuDLwN4j08I-fmU4U"
 
 if not MAX_BOT_TOKEN:
@@ -44,7 +43,6 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = "salesplan_bot.db"
 
-# === СОСТОЯНИЯ ===
 STATE_MENU = "menu"
 STATE_AWAITING_BUSINESS_NAME = "awaiting_business_name"
 STATE_AWAITING_BUSINESS_DESCRIPTION = "awaiting_business_description"
@@ -53,7 +51,6 @@ STATE_AI_CHAT = "ai_chat"
 STATE_AWAITING_IMPLEMENTATION = "awaiting_implementation"
 STATE_AWAITING_FEEDBACK_REASON = "awaiting_feedback_reason"
 
-# === CALLBACK DATA ===
 CALLBACK_AUDIT = "audit"
 CALLBACK_ASK_AI = "ask_ai"
 CALLBACK_CHALLENGE_TASK = "challenge_task"
@@ -305,7 +302,7 @@ async def send_animation(user_id: str):
         await send_message(user_id, step, None)
         await asyncio.sleep(2)
 
-# === DEEPSEEK API ===
+# === DEEPSEEK API (сокращённо, без изменений) ===
 async def call_deepseek_marketing_plan(name: str, description: str, answers: dict, user_id: str = None) -> str:
     if not DEEPSEEK_API_KEY:
         return None
@@ -466,7 +463,6 @@ def get_start_keyboard():
         [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}]
     ]
 
-# === ТЕКСТЫ ===
 CONSULTATION_TEXT = """🎯 Консультация с Вероникой Макаревич
 
 Что вы получите за 30 минут:
@@ -505,6 +501,11 @@ WELCOME_TEXT = """🔥 Привет, предприниматель! Я Веро
 # === ОБРАБОТЧИКИ ===
 async def process_message(user_id: str, text: str):
     state, data = get_user_state(user_id)
+    logger.info(f"Processing message from {user_id}: '{text}' state={state}")
+
+    # Если нет текста или команда start – показываем меню
+    if not text or text.strip() == "":
+        text = "/start"
 
     if text == "/stats" and user_id == os.getenv("PRODUCER_USER_ID", "24585087"):
         conn = sqlite3.connect(DB_PATH)
@@ -571,13 +572,17 @@ async def process_message(user_id: str, text: str):
         save_user_state(user_id, STATE_MENU, {})
         return
 
+    # fallback
     save_user_state(user_id, STATE_MENU, {})
     await send_message(user_id, "Выберите действие:", get_start_keyboard())
 
 async def process_callback(chat_id: str, callback_id: str, callback_data: str):
+    logger.info(f"Processing callback from {chat_id}: callback_id={callback_id}, data={callback_data}")
     state, _ = get_user_state(chat_id)
 
-    if callback_data in ("start", "get_started", "START", "", None):
+    # НАДЁЖНАЯ ОБРАБОТКА СИСТЕМНОЙ КНОПКИ "НАЧАТЬ"
+    # Если callback_data пустое, None, 'start', 'get_started' или любое другое значение – показываем меню
+    if not callback_data or callback_data in ("start", "get_started", "START", "start_survey"):
         save_user_state(chat_id, STATE_MENU, {})
         await send_callback_answer(callback_id, WELCOME_TEXT, get_start_keyboard())
         return
@@ -727,7 +732,8 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
                 await send_message(chat_id, "Было полезно? Поделитесь мнением.", get_feedback_keyboard())
         return
 
-    await send_callback_answer(callback_id, "Неизвестная команда.", get_main_menu_keyboard())
+    # Если ничего не подошло – показываем главное меню
+    await send_callback_answer(callback_id, "Выберите действие:", get_start_keyboard())
 
 # === НАПОМИНАНИЯ ===
 async def reminders_task():
@@ -753,7 +759,7 @@ async def reminders_task():
             conn.close()
         except Exception as e:
             logger.error(f"Reminders error: {e}")
-        await asyncio.sleep(21600)
+        await asyncio.sleep(21600)  # 6 часов
 
 # === FASTAPI ===
 @asynccontextmanager
@@ -765,7 +771,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot running", "version": "10.9"}
+    return {"status": "Salesplan bot running", "version": "10.10"}
 
 @app.get("/health")
 async def health():
@@ -780,15 +786,21 @@ async def webhook(request: Request):
             msg = payload["message"]
             user_id = msg.get("sender", {}).get("user_id")
             text = msg.get("body", {}).get("text")
-            if user_id and text:
+            if user_id and text is not None:
                 await process_message(str(user_id), text.strip())
+            elif user_id:
+                # Пустое сообщение – обрабатываем как /start
+                await process_message(str(user_id), "/start")
         elif "callback" in payload:
             cb = payload["callback"]
             user_id = cb.get("user", {}).get("user_id")
             callback_id = cb.get("callback_id")
             data = cb.get("payload")
-            if user_id and data:
-                await process_callback(str(user_id), str(callback_id), data)
+            if user_id and data is not None:
+                await process_callback(str(user_id), str(callback_id), str(data))
+            elif user_id:
+                # Пустой callback – обрабатываем как кнопку "Начать"
+                await process_callback(str(user_id), str(callback_id), "start")
         return Response(status_code=200)
     except Exception as e:
         logger.error(f"Webhook error: {traceback.format_exc()}")
