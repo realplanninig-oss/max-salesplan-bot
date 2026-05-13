@@ -755,9 +755,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ВРЕМЕННЫЙ ЭНДПОИНТ ДЛЯ ПОДПИСКИ НА COOKIE_QUERY (УДАЛИТЬ ПОСЛЕ ИСПОЛЬЗОВАНИЯ)
+# ВРЕМЕННЫЙ ЭНДПОИНТ ДЛЯ ПОДПИСКИ НА CALLBACK_QUERY (УДАЛИТЬ ПОСЛЕ)
 @app.get("/subscribe_me")
 async def subscribe_to_bot_events():
+    import requests
     token = MAX_BOT_TOKEN
     url = "https://platform-api.max.ru/subscriptions"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
