@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan (версия 10.14: исправлена кнопка "Да, хочу маркетинговый план")
+# File: main.py — бот Salesplan (версия 10.15: добавлено логирование callback и исправлена подписка)
 
 import asyncio
 import logging
@@ -62,10 +62,9 @@ CALLBACK_MENU = "menu"
 CALLBACK_RESET = "reset"
 CALLBACK_FEEDBACK_YES = "feedback_yes"
 CALLBACK_FEEDBACK_NO = "feedback_no"
-CALLBACK_START_SURVEY = "start_survey"   # добавлено
+CALLBACK_START_SURVEY = "start_survey"
 CALLBACK_BOOK_CONSULT = "book_consult"
 
-# === ОПРОСНИК ===
 Q1_SERVICE = "q1_service"
 Q1_INFO = "q1_info"
 Q1_CONSULT = "q1_consult"
@@ -94,7 +93,6 @@ SURVEY_QUESTIONS = [
     {"key": "q5", "text": "Уже есть автоворонка?", "options": [(Q5_YES, "Да"), (Q5_NO, "Нет"), (Q5_PROGRESS, "В разработке")]},
 ]
 
-# === БАЗА ДАННЫХ ===
 def init_bot_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -112,7 +110,6 @@ def init_bot_db():
 
 init_bot_db()
 
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 def get_moscow_time():
     return datetime.utcnow() + timedelta(hours=3)
 
@@ -258,7 +255,6 @@ def complete_challenge(challenge_id: int):
     conn.commit()
     conn.close()
 
-# === ОТПРАВКА СООБЩЕНИЙ ===
 async def send_message(chat_id: str, text: str, keyboard: list = None):
     url = f"https://platform-api.max.ru/messages?user_id={chat_id}"
     payload = {"text": text}
@@ -303,7 +299,6 @@ async def send_animation(user_id: str):
         await send_message(user_id, step, None)
         await asyncio.sleep(2)
 
-# === DEEPSEEK API ===
 async def call_deepseek_marketing_plan(name: str, description: str, answers: dict, user_id: str = None) -> str:
     if not DEEPSEEK_API_KEY:
         return None
@@ -399,7 +394,6 @@ def fallback_task(day: int) -> str:
 ПОЧЕМУ ЭТО ВАЖНО:
 Ты увидишь реальный спрос и начнёшь получать заявки."""
 
-# === КЛАВИАТУРЫ ===
 def get_main_menu_keyboard():
     return [
         [{"type": "callback", "text": "📊 Получить маркетинговый план", "payload": CALLBACK_AUDIT}],
@@ -583,7 +577,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         await send_callback_answer(callback_id, WELCOME_TEXT, get_start_keyboard())
         return
 
-    # ========== НОВЫЙ ОБРАБОТЧИК ДЛЯ КНОПКИ "ДА, ХОЧУ ПЛАН" ==========
+    # Обработчик кнопки "Да, хочу маркетинговый план"
     if callback_data == CALLBACK_START_SURVEY or callback_data == "start_survey":
         save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {})
         await send_callback_answer(callback_id, "Введите название вашего проекта:", None)
@@ -596,11 +590,6 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
 
     if callback_data == CALLBACK_BOOK_CONSULT:
         await send_callback_answer(callback_id, CONSULTATION_TEXT, [[{"type": "link", "text": "✍️ Перейти к записи", "url": CONSULT_LINK}], [{"type": "callback", "text": "🏠 Меню", "payload": CALLBACK_MENU}]])
-        return
-
-    if callback_data == CALLBACK_START_SURVEY or callback_data == "start_survey":
-        save_user_state(chat_id, STATE_AWAITING_BUSINESS_NAME, {})
-        await send_callback_answer(callback_id, "Введите название вашего проекта:", None)
         return
 
     if callback_data == CALLBACK_RESET:
@@ -768,9 +757,29 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Временный эндпоинт для настройки подписки (удалить после использования)
+@app.get("/subscribe_me")
+async def subscribe_to_bot_events():
+    token = MAX_BOT_TOKEN
+    url = "https://platform-api.max.ru/subscriptions"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {
+        "url": "https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/webhook",
+        "update_types": ["message_created", "bot_started", "callback_query"]
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        return {
+            "status": response.status_code,
+            "response": response.json() if response.text else None,
+            "text": response.text
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot running", "version": "10.14"}
+    return {"status": "Salesplan bot running", "version": "10.15"}
 
 @app.get("/health")
 async def health():
@@ -801,6 +810,7 @@ async def webhook(request: Request):
             user_id = cb.get("user", {}).get("user_id")
             callback_id = cb.get("callback_id")
             data = cb.get("payload")
+            logger.info(f"CALLBACK RECEIVED: user_id={user_id}, callback_id={callback_id}, data={data}")
             if user_id:
                 await process_callback(str(user_id), str(callback_id), str(data) if data else "")
         return Response(status_code=200)
