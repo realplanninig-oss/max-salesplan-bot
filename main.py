@@ -760,9 +760,10 @@ app = FastAPI(lifespan=lifespan)
 # Временный эндпоинт для настройки подписки (удалить после использования)
 @app.get("/subscribe_me")
 async def subscribe_to_bot_events():
+    import requests
     token = MAX_BOT_TOKEN
     url = "https://platform-api.max.ru/subscriptions"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}  # добавлен Bearer
     payload = {
         "url": "https://realplanninig-oss-max-salesplan-bot-1a18.twc1.net/webhook",
         "update_types": ["message_created", "bot_started", "callback_query"]
