@@ -1,4 +1,4 @@
-# File: main.py — бот Salesplan (версия 10.17: временный эндпоинт для подписки)
+# File: main.py — бот Salesplan (версия 21-дневный челлендж + офферы 50/300к)
 
 import asyncio
 import logging
@@ -22,6 +22,8 @@ load_dotenv()
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJp3NEa7OYZr1MKfUuC1hYDyKh2f4HFkfTXT88W3txWaBaFQmU")
+CONSULT_LINK = "https://max.ru/u/f9LHodD0cOJmqGaOJJxBthmX1NCjnOXHlsnYzYTc83uuDLwN4j08I-fmU4U"
+PRODUCER_CHAT_LINK = "HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJp3NEa7OYZr1MKfUuC1hYDyKh2f4HFkfTXT88W3txWaBaFQmU")
 CONSULT_LINK = "https://max.ru/u/f9LHodD0cOJmqGaOJJxBthmX1NCjnOXHlsnYzYTc83uuDLwN4j08I-fmU4U"
 
 if not MAX_BOT_TOKEN:
@@ -62,6 +64,8 @@ CALLBACK_FEEDBACK_YES = "feedback_yes"
 CALLBACK_FEEDBACK_NO = "feedback_no"
 CALLBACK_START_SURVEY = "start_survey"
 CALLBACK_BOOK_CONSULT = "book_consult"
+CALLBACK_OFFER_SKIP = "offer_skip"
+CALLBACK_FREE_CHECK = "free_check"
 
 Q1_SERVICE = "q1_service"
 Q1_INFO = "q1_info"
@@ -301,6 +305,27 @@ async def send_animation(user_id: str):
         await send_message(user_id, step, None)
         await asyncio.sleep(2)
 
+async def send_offer(chat_id: str, offer_type: str, price: int, description: str):
+    text = f"🔥 Специальное предложение!\n\n{description}\n\nСтоимость: {price} ₽\n\nПредложение действительно только сегодня."
+    keyboard = [
+        [{"type": "link", "text": "💎 Написать продюсеру", "url": PRODUCER_CHAT_LINK}],
+        [{"type": "callback", "text": "⏩ Пропустить", "payload": CALLBACK_OFFER_SKIP}]
+    ]
+    await send_message(chat_id, text, keyboard)
+
+async def send_warmup(chat_id: str, stage: str):
+    if stage == "pre_offer_7":
+        text = "🔥 Секрет моих клиентов\n\nЗнаешь, почему большинство экспертов покупают готовую воронку, а не делают сами?\nПотому что за месяц тестов они теряют 200–300 тысяч упущенной прибыли.\nА я за 7 дней настраиваю систему, которая сразу даёт заявки.\nЧерез 2 дня будет специальное предложение. Следи за чатом."
+    elif stage == "pre_offer_7_last":
+        text = "⚠️ Последнее предупреждение\n\nЗавтра я открою доступ к **персональному внедрению воронки** всего за 50 000 ₽.\nОбычно эта услуга стоит от 150 000, но для участников челленджа — специальная цена.\nУспей, количество мест ограничено (5 штук). Завтра в это время — кнопка «Узнать»."
+    elif stage == "pre_offer_14":
+        text = "💡 Ты уже создал 5 касаний?\n\nХорошо. Но без правильной связки они не приведут к сделке.\nЯ вижу, что у многих на этом этапе падают конверсии.\nЧерез 2 дня я снова предложу внедрение под ключ — 50 000 ₽.\nЭто последний шанс получить воронку с моей руки до нового года."
+    elif stage == "pre_offer_14_last":
+        text = "🚀 Всего 24 часа\n\nЗавтра в это время цена подскочит до 150 000 ₽. Сейчас — 50 000.\nВнедрение включает:\n- Аудит вашей текущей воронки\n- Настройку оффера и касаний\n- Скрипты для менеджеров\n- Первую сделку под моим контролем\nКнопка активации появится завтра после выполнения задания."
+    else:
+        return
+    await send_message(chat_id, text, None)
+
 async def call_deepseek_marketing_plan(name: str, description: str, answers: dict, user_id: str = None) -> str:
     if not DEEPSEEK_API_KEY:
         return None
@@ -358,10 +383,41 @@ async def call_deepseek_chat(question: str, user_id: str, report_text: str, hist
 
 async def generate_challenge_task(user_id: str, day: int, report_text: str) -> str:
     if not DEEPSEEK_API_KEY:
-        return fallback_task(day)
-    prompt = f"""Дай ОДНО конкретное действие (не список) на день {day} из 14, чтобы получить первых клиентов.
-Ниже план пользователя: {report_text[:3000]}
+        return fallback_task(day, get_stage(day))
+    
+    stage = get_stage(day)
+    stage_goal = {
+        1: "Настройка воронки под одного клиента (исследование ЦА, оффер, первое касание)",
+        2: "Создание 5 касаний (пост, рассылка, видео, разбор, приглашение)",
+        3: "Первая продажа (отработка возражений, оффер, закрытие)"
+    }[stage]
+    days_in_stage = day - (stage-1)*7
+    if stage == 3 and day == 18:  # специальный день для скрипта продаж
+        prompt = f"""Ты — наставник по продажам. Этап «Первая сделка». День {days_in_stage} из 7 (общий день {day}).
+
+Задание: Создай готовый скрипт продажи для первой сделки. Скрипт должен быть написан от первого лица (эксперт обращается к клиенту). Учитывай план пользователя: {report_text[:2000]}
+
+Структура:
+- Приветствие и выявление боли
+- Предложение решения
+- Отработка 3 типичных возражений
+- Призыв к действию (оплата или запись)
+
+Формат:
+СКРИПТ ПРОДАЖИ ДЛЯ ПЕРВОЙ СДЕЛКИ
+[текст скрипта]
+
+После скрипта напиши: «Используй этот скрипт в переписке или звонке. Завтра задание — отправить его 3 потенциальным клиентам.»"""
+    else:
+        prompt = f"""Ты — наставник по маркетингу в проекте Salesplan.
+План пользователя: {report_text[:3000]}
+
+Сейчас этап {stage}/3: {stage_goal}
+День {days_in_stage} из {7 if stage<3 else 7} (внутри этапа, общий день {day}).
+
+Дай ОДНО конкретное действие на сегодня. Без списков, только одно действие.
 Ограничения: только VK, MAX, Яндекс.Директ. Без Instagram/Telegram.
+
 Формат:
 ЗАДАНИЕ ДЕНЬ {day}
 [одно действие]
@@ -369,6 +425,7 @@ async def generate_challenge_task(user_id: str, day: int, report_text: str) -> s
 [2-3 шага]
 ПОЧЕМУ ЭТО ВАЖНО:
 [одно предложение]"""
+    
     log_deepseek_query(user_id, "challenge_task", prompt)
     try:
         resp = requests.post("https://api.deepseek.com/v1/chat/completions",
@@ -378,29 +435,110 @@ async def generate_challenge_task(user_id: str, day: int, report_text: str) -> s
         if resp.status_code == 200:
             task = resp.json()["choices"][0]["message"]["content"]
             if len(task) < 50:
-                return fallback_task(day)
+                return fallback_task(day, stage)
             return task
-        return fallback_task(day)
+        return fallback_task(day, stage)
     except Exception:
-        return fallback_task(day)
+        return fallback_task(day, stage)
 
-def fallback_task(day: int) -> str:
-    return f"""ЗАДАНИЕ ДЕНЬ {day}
-Создай пост в VK о проблеме клиента и предложи решение.
+def get_stage(day: int) -> int:
+    if day <= 7:
+        return 1
+    elif day <= 14:
+        return 2
+    else:
+        return 3
+
+def fallback_task(day: int, stage: int) -> str:
+    if stage == 1:
+        return f"""ЗАДАНИЕ ДЕНЬ {day}
+Напишите в MAX сообщение: «Кто ваш идеальный клиент? Опишите 3 его боли».
 
 КАК СДЕЛАТЬ:
-1. Открой VK, напиши пост на 300-500 символов.
-2. В конце добавь: «Напиши "разбор" в комментариях — сделаю бесплатный разбор».
-3. Опубликуй и ответь трём первым комментаторам.
+1. Откройте MAX, чат с собой.
+2. Напишите 3 предложения.
+3. Сохраните этот портрет.
 
 ПОЧЕМУ ЭТО ВАЖНО:
-Ты увидишь реальный спрос и начнёшь получать заявки."""
+Без понимания клиента любая воронка не сработает."""
+    elif stage == 2:
+        return f"""ЗАДАНИЕ ДЕНЬ {day}
+Создайте пост в VK: «3 признака, что у вас дырявая воронка».
+
+КАК СДЕЛАТЬ:
+1. Напишите 300-500 знаков.
+2. В конце добавьте «Напиши "разбор" в комментарии».
+3. Опубликуйте.
+
+ПОЧЕМУ ЭТО ВАЖНО:
+Это первое касание, которое привлечёт заявки."""
+    else:
+        if day == 18:
+            return """СКРИПТ ПРОДАЖИ ДЛЯ ПЕРВОЙ СДЕЛКИ
+
+«Привет, [имя]! Вы говорили, что хотите [результат]. Я посмотрел ваш бизнес и вижу, что главная проблема — [боль]. У меня есть решение: [оффер]. Стоит [цена]. Если не подойдёт — верну деньги. Давайте попробуем?»
+
+Отработка возражения «дорого»: «Понимаю. Но если не решить проблему, вы потеряете [сумма] в месяц. А здесь вы платите один раз и получаете систему.»
+
+Призыв: «Оплатите по ссылке — и завтра начнём.»"""
+        else:
+            return f"""ЗАДАНИЕ ДЕНЬ {day}
+Напишите 3 возражения, которые вы слышите от клиентов, и ответы на них.
+
+КАК СДЕЛАТЬ:
+1. Вспомните реальные отказы.
+2. Напишите честные ответы, снимающие сомнения.
+3. Отправьте в MAX или положите в скрипт продажи.
+
+ПОЧЕМУ ЭТО ВАЖНО:
+Без отработки возражений вы теряете 80% готовых клиентов."""
+
+async def advance_challenge(chat_id: str, callback_id: str):
+    chall = get_active_challenge(chat_id)
+    if not chall:
+        return
+    # Если завершили 21 день
+    if chall["current_day"] >= 21:
+        complete_challenge(chall["id"])
+        # Сначала бесплатная проверка
+        state, data = get_user_state(chat_id)
+        if not data.get("free_check_shown"):
+            data["free_check_shown"] = True
+            save_user_state(chat_id, state, data)
+            await send_message(chat_id, 
+                "🏆 Вы выполнили все 21 задание челленджа!\n\n"
+                "Хотите, я (продюсер) лично проверю вашу воронку и первые касания?\n"
+                "Напишите мне в личный чат — бесплатно. Я дам обратную связь и рекомендации.\n\n"
+                f"👉 {PRODUCER_CHAT_LINK}",
+                [[{"type": "callback", "text": "✅ Хочу проверку", "payload": CALLBACK_FREE_CHECK},
+                  {"type": "callback", "text": "🔁 Показать годовую поддержку", "payload": CALLBACK_OFFER_SKIP}]])
+            return
+        # Если бесплатная проверка уже показана или пропущена, показываем платный оффер на 300к
+        if not data.get("offer_21_shown"):
+            data["offer_21_shown"] = True
+            save_user_state(chat_id, state, data)
+            await send_offer(chat_id, "21", 300000, 
+                "Годовая поддержка с AI и продюсером.\n\n"
+                "- AI-ассистент 24/7 отвечает на вопросы по воронке\n"
+                "- Ежемесячный стратегический разбор с продюсером\n"
+                "- Обновление оффера и касаний под рынок\n"
+                "- Приоритетная техподдержка")
+            return
+        await send_callback_answer(callback_id, "🎉 Поздравляю! Челлендж пройден!", get_after_plan_keyboard())
+        return
+    
+    new_day = chall["current_day"] + 1
+    advance_challenge_day(chall["id"], new_day)
+    report = get_report(chat_id, "premium")
+    new_task = await generate_challenge_task(chat_id, new_day, report["text"])
+    save_challenge_task(chall["id"], new_day, new_task)
+    await send_callback_answer(callback_id, f"✅ Задание дня {chall['current_day']} выполнено!\n\nЗадание дня {new_day}:\n{new_task}", get_challenge_keyboard())
 
 def get_main_menu_keyboard():
     return [
         [{"type": "callback", "text": "📊 Получить маркетинговый план", "payload": CALLBACK_AUDIT}],
         [{"type": "callback", "text": "💬 Задать вопрос AI (круглосуточно)", "payload": CALLBACK_ASK_AI}],
-        [{"type": "callback", "text": "🏆 Челлендж «Первые деньги за 14 дней»", "payload": CALLBACK_CHALLENGE_TASK}],
+        [{"type": "callback", "text": "🏆 Челлендж «Первые деньги за 21 день»", "payload": CALLBACK_CHALLENGE_TASK}],
         [{"type": "callback", "text": "🎯 Записаться на консультацию", "payload": CALLBACK_BOOK_CONSULT}],
         [{"type": "link", "text": "🆘 Помощь", "url": HELP_URL}]
     ]
@@ -486,12 +624,9 @@ WELCOME_TEXT = """🔥 Привет, предприниматель! Я Веро
 
 💬 AI-чат 24/7 — задавай любые вопросы по плану. Без вот этих «подожди, я отвечу завтра».
 
-🏆 Челлендж 14 дней — получай одно чёткое задание в день, шаг за шагом иди к первым деньгам.
+🏆 Челлендж 21 день — 3 этапа, 21 задание. На 7 и 14 день — специальные предложения. В конце — проверка от продюсера.
 
 🎯 Консультация со мной — разберём твой случай, найду узкое место и скажу, как его пробить.
-
-Зачем тебе маркетинговый план? 
-Большинство экспертов продают впустую: постят, снимают рилс, но клиент не идёт. Потому что нет системы. План — это компас. Он показывает, где прячутся твои деньги.
 
 Поехали? 👇"""
 
@@ -645,7 +780,7 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
             if cur and not cur["is_completed"]:
                 await send_callback_answer(callback_id, f"📋 Задание дня {chall['current_day']}:\n\n{cur['task_text']}", get_challenge_keyboard())
             else:
-                await send_callback_answer(callback_id, f"Прогресс: день {chall['current_day']} из 14, выполнено {chall['tasks_completed']}", get_challenge_keyboard())
+                await send_callback_answer(callback_id, f"Прогресс: день {chall['current_day']} из 21, выполнено {chall['tasks_completed']}", get_challenge_keyboard())
         return
 
     if callback_data == CALLBACK_CHALLENGE_DONE:
@@ -657,17 +792,54 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         if not cur or cur["is_completed"]:
             await send_callback_answer(callback_id, "Задание уже выполнено.", get_challenge_keyboard())
             return
+        
         mark_task_completed(chall["id"], chall["current_day"])
-        if chall["current_day"] >= 14:
-            complete_challenge(chall["id"])
-            await send_callback_answer(callback_id, "🎉 Поздравляю! Челлендж пройден!", get_after_plan_keyboard())
-        else:
-            new_day = chall["current_day"] + 1
-            advance_challenge_day(chall["id"], new_day)
-            report = get_report(chat_id, "premium")
-            new_task = await generate_challenge_task(chat_id, new_day, report["text"])
-            save_challenge_task(chall["id"], new_day, new_task)
-            await send_callback_answer(callback_id, f"✅ Задание дня {chall['current_day']} выполнено!\n\nЗадание дня {new_day}:\n{new_task}", get_challenge_keyboard())
+        
+        state, data = get_user_state(chat_id)
+        
+        # Прогрев перед оффером на 7 день
+        if chall["current_day"] == 5 and not data.get("warmup_7_1"):
+            data["warmup_7_1"] = True
+            save_user_state(chat_id, state, data)
+            await send_warmup(chat_id, "pre_offer_7")
+        if chall["current_day"] == 6 and not data.get("warmup_7_2"):
+            data["warmup_7_2"] = True
+            save_user_state(chat_id, state, data)
+            await send_warmup(chat_id, "pre_offer_7_last")
+        
+        # Оффер на 7 день (50к)
+        if chall["current_day"] == 7 and not data.get("offer_7_shown"):
+            data["offer_7_shown"] = True
+            save_user_state(chat_id, state, data)
+            await send_offer(chat_id, "7", 50000,
+                "Персональное внедрение воронки продаж от продюсера экспертов.\n\n"
+                "Я лично настрою воронку, напишу скрипты, подключу рассылки. "
+                "Вы получите готовую систему, которая приносит заявки без вашего участия.\n\n"
+                "Цена сегодня — 50 000 ₽ вместо 150 000 ₽.")
+            return
+        
+        # Прогрев перед оффером на 14 день
+        if chall["current_day"] == 12 and not data.get("warmup_14_1"):
+            data["warmup_14_1"] = True
+            save_user_state(chat_id, state, data)
+            await send_warmup(chat_id, "pre_offer_14")
+        if chall["current_day"] == 13 and not data.get("warmup_14_2"):
+            data["warmup_14_2"] = True
+            save_user_state(chat_id, state, data)
+            await send_warmup(chat_id, "pre_offer_14_last")
+        
+        # Оффер на 14 день (50к)
+        if chall["current_day"] == 14 and not data.get("offer_14_shown"):
+            data["offer_14_shown"] = True
+            save_user_state(chat_id, state, data)
+            await send_offer(chat_id, "14", 50000,
+                "Внедрение под ключ: продюсер разбирает вашу нишу, настраивает оффер и касания.\n\n"
+                "Гарантия первой сделки в течение 14 дней после внедрения.\n"
+                "Стоимость — 50 000 ₽. Предложение действительно только сегодня.")
+            return
+        
+        # Если офферы на этот день не нужны или уже показаны — идём дальше
+        await advance_challenge(chat_id, callback_id)
         return
 
     if callback_data == CALLBACK_CHALLENGE_PROGRESS:
@@ -675,7 +847,29 @@ async def process_callback(chat_id: str, callback_id: str, callback_data: str):
         if not chall:
             await send_callback_answer(callback_id, "Нет активного челленджа.", get_main_menu_keyboard())
             return
-        await send_callback_answer(callback_id, f"Прогресс: день {chall['current_day']} из 14, выполнено {chall['tasks_completed']}", get_challenge_keyboard())
+        # Вычисляем этап
+        if chall["current_day"] <= 7:
+            stage = 1
+            stage_name = "Воронка под клиента"
+        elif chall["current_day"] <= 14:
+            stage = 2
+            stage_name = "5 касаний"
+        else:
+            stage = 3
+            stage_name = "Первая продажа"
+        await send_callback_answer(callback_id, f"Прогресс: этап {stage}/3 ({stage_name}), день {chall['current_day']} из 21, выполнено {chall['tasks_completed']}", get_challenge_keyboard())
+        return
+
+    if callback_data == CALLBACK_OFFER_SKIP:
+        await send_callback_answer(callback_id, "Хорошо, продолжим челлендж.", None)
+        await advance_challenge(chat_id, callback_id)
+        return
+
+    if callback_data == CALLBACK_FREE_CHECK:
+        await send_callback_answer(callback_id, 
+            f"Отлично! Напишите мне в личный чат: {PRODUCER_CHAT_LINK}\n\n"
+            "Пришлите ссылку на вашу воронку и последнее задание — я проверю в течение дня.",
+            [[{"type": "callback", "text": "🏠 В меню", "payload": CALLBACK_MENU}]])
         return
 
     if callback_data in [Q1_SERVICE, Q1_INFO, Q1_CONSULT, Q1_NONE, Q2_LT5, Q2_5_20, Q2_20_50, Q2_50P,
@@ -757,7 +951,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    return {"status": "Salesplan bot running", "version": "10.17"}
+    return {"status": "Salesplan bot running", "version": "10.21"}
 
 @app.get("/health")
 async def health():
