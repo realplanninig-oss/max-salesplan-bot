@@ -23,8 +23,7 @@ MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJp3NEa7OYZr1MKfUuC1hYDyKh2f4HFkfTXT88W3txWaBaFQmU")
 CONSULT_LINK = "https://max.ru/u/f9LHodD0cOJmqGaOJJxBthmX1NCjnOXHlsnYzYTc83uuDLwN4j08I-fmU4U"
-PRODUCER_CHAT_LINK = "HELP_URL = os.getenv("HELP_URL", "https://max.ru/u/f9LHodD0cOJp3NEa7OYZr1MKfUuC1hYDyKh2f4HFkfTXT88W3txWaBaFQmU")
-CONSULT_LINK = "https://max.ru/u/f9LHodD0cOJmqGaOJJxBthmX1NCjnOXHlsnYzYTc83uuDLwN4j08I-fmU4U"
+PRODUCER_CHAT_LINK = "https://max.ru/u/f9LHodD0cOJkltSW5ZQwHi9HKWedIM3kHDtJHuTzfD9OdgGBfDpfH9Rskjs"
 
 if not MAX_BOT_TOKEN:
     raise RuntimeError("MAX_BOT_TOKEN not set in environment")
